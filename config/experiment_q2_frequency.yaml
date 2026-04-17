@@ -1,0 +1,31 @@
+# Q2 — Frequency ceiling
+# ──────────────────────────────────────────────────────────────────────────────
+# Research question: What is the cost of TabPFN's 10,000-sample ceiling for
+# frequency modelling?
+#
+# GLM and XGBoost run on the full training fold (no subsampling).
+# TabPFN runs at each subsample size listed below; results are nested
+# (2k ⊂ 5k ⊂ 10k — same random draw, first N rows taken).
+#
+# Output: Figure 1 — Poisson deviance vs. subsample size for French and Belgian
+#         MTPL frequency; GLM and XGBoost as horizontal reference lines.
+
+experiment_id: experiment_q2_frequency
+task: freq
+cv_seed: 42
+cv_folds: 5
+
+datasets:
+  - freMTPL2
+  - beMTPL97
+
+models:
+  - glm
+  - xgboost
+  - tabpfn
+
+tabpfn:
+  # Subsample sizes to evaluate. The script draws max(subsample_sizes) rows
+  # per fold (seed = cv_seed + fold_index) and uses the first N for each size.
+  # Updated for TabPFN-2.6 which scales to 100,000 samples.
+  subsample_sizes: [2000, 5000, 10000, 50000, 100000]

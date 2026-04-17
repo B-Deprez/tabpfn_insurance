@@ -1,0 +1,68 @@
+# Data loading configuration
+# ──────────────────────────────────────────────────────────────────────────────
+# Loading strategy: datasets are loaded live via rpy2 from the CASdatasets R
+# package on first access, then cached as parquet in data/processed/ for speed.
+# Set cache_processed: false to force a fresh load from R every run.
+
+loading_strategy: rpy2
+cache_processed: true
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Datasets
+# ──────────────────────────────────────────────────────────────────────────────
+datasets:
+
+  freMTPL2:
+    freq:
+      r_object: freMTPL2freq          # name of object in CASdatasets
+      expected_rows: 677991           # pre-cleaning row count (raw R load)
+      id_col: IDpol
+      target_col: ClaimNb
+      exposure_col: Exposure
+      # Cleaning follows Wüthrich & Buser (2021).
+      cleaning:
+        - filter: "Exposure > 0"
+          description: "Remove records with zero or negative exposure"
+        - filter: "Exposure <= 1"
+          description: "Remove records with exposure exceeding one year (implausible)"
+        - filter: "ClaimNb >= 0"
+          description: "Remove records with negative claim counts"
+        - filter: "ClaimNb < 5"
+          description: "Remove records with implausibly high claim counts (>=5)"
+
+    sev:
+      r_object_freq: freMTPL2freq     # features come from the frequency table
+      r_object_sev: freMTPL2sev       # claim amounts; 2 cols: IDpol, ClaimAmount
+      expected_rows_sev: 26444        # raw row count of freMTPL2sev before join
+      id_col: IDpol
+      target_col: ClaimAmount         # aggregated per policy after join
+      weight_col: ClaimNb
+      # Cleaning applied to the joined severity frame.
+      cleaning:
+        - filter: "ClaimAmount > 0"
+          description: "Remove records with zero or negative total claim amount"
+
+  beMTPL97:
+    # beMTPL97 is a single R object used for both frequency and severity tasks.
+    # Assumption: column names follow the standard CASdatasets naming convention:
+    #   nclaims  – number of claims (frequency target)
+    #   expo     – exposure in years (fraction of year at risk)
+    #   amount   – total claim amount (severity numerator; 0 for policies with no claims)
+    # Spatial columns long/lat are present but not listed in the feature table
+    # from the experiment outline; they are excluded from modelling (see features.yaml).
+    r_object: beMTPL97
+    expected_rows: 163212             # pre-cleaning row count (raw R load)
+    freq:
+      target_col: nclaims
+      exposure_col: expo
+    sev:
+      target_col: amount
+      weight_col: nclaims
+    # Cleaning follows Henckaerts et al. (2021).
+    cleaning:
+      - filter: "expo > 0"
+        description: "Remove records with zero or negative exposure"
+      - filter: "expo <= 1"
+        description: "Remove records with exposure exceeding one year (implausible)"
+      - filter: "nclaims >= 0"
+        description: "Remove records with negative claim counts"

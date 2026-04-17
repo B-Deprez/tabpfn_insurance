@@ -1,0 +1,26 @@
+# Q1 — Severity benchmark
+# ──────────────────────────────────────────────────────────────────────────────
+# Research question: Is TabPFN competitive with GLM and XGBoost on severity,
+# with zero tuning?
+#
+# Output: Table 1 — Gamma deviance (mean ± std over 5 folds + pooled OOF)
+#         for French MTPL severity and Belgian MTPL severity × 3 models.
+
+experiment_id: experiment_q1_severity
+task: sev
+cv_seed: 42
+cv_folds: 5
+
+datasets:
+  - freMTPL2
+  - beMTPL97
+
+models:
+  - glm
+  - xgboost
+  - tabpfn
+
+tabpfn:
+  # TabPFN-2.6 scales to 100,000 samples; both severity datasets fit comfortably
+  # within this ceiling so no subsampling is needed.
+  max_train_size: 100000

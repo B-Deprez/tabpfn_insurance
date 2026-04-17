@@ -1,0 +1,40 @@
+# Q3 — Interpretability / SHAP
+# ──────────────────────────────────────────────────────────────────────────────
+# Research question: Does TabPFN learn actuarially meaningful feature-response
+# patterns?
+#
+# Scope: fold 1 (index 0) only on each dataset × task combination.
+# One fold is sufficient for the qualitative beeswarm comparison.
+#
+# SHAP strategy per model:
+#   TabPFN   — built-in SHAP method (TabPFNRegressor.get_shap_values or
+#               KernelExplainer fallback if unavailable)
+#   XGBoost  — shap.TreeExplainer
+#   GLM      — standardised coefficients on the test fold (not SHAP);
+#               stored alongside SHAP arrays for plotting on the same axis
+#
+# Output: Figure 2 — side-by-side beeswarm (4 rows × 3 cols):
+#           rows = freMTPL2 freq | freMTPL2 sev | beMTPL97 freq | beMTPL97 sev
+#           cols = TabPFN | XGBoost | GLM coefficients
+#         Raw arrays saved to res/shap/.
+
+experiment_id: experiment_q3_shap
+cv_seed: 42
+cv_folds: 5
+shap_fold: 0          # 0-based fold index to use for SHAP computation
+
+datasets:
+  - freMTPL2
+  - beMTPL97
+
+tasks:
+  - freq
+  - sev
+
+models:
+  - glm
+  - xgboost
+  - tabpfn
+
+tabpfn:
+  max_train_size: 100000

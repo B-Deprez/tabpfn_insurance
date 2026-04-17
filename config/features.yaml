@@ -1,0 +1,135 @@
+# Feature encoding decisions — authoritative per-feature record.
+# ──────────────────────────────────────────────────────────────────────────────
+# Source: experiment_outline.md, informed by notebooks/explore_categoricals.ipynb
+# All encoding parameters are fit on the training fold only.
+#
+# Encoding types:
+#   ordinal_string  – GLM: one-hot (drop_first=True); tree: integer map per `order`
+#   ordinal_integer – both: as-is (numeric, no transformation)
+#   nominal_string  – GLM: one-hot (drop_first=True); tree: label encoding (fit on train)
+#   binary          – both: 0/1 per `mapping`
+#   numeric         – both: as-is (no transformation)
+#
+# Assumption: `Density` (freMTPL2freq) is included as a numeric feature even
+# though it is not listed in the experiment outline feature table, as it is
+# present in the raw dataset and commonly used in the MTPL pricing literature.
+# Remove it from this file if the explore_categoricals notebook deemed it
+# uninformative.
+#
+# Assumption: spatial columns (long, lat) in beMTPL97 are excluded from
+# modelling because they are not listed in the experiment outline feature table.
+
+datasets:
+
+  freMTPL2:
+    # Ordered list of feature columns used in freMTPL2freq (and by extension
+    # freMTPL2sev, which inherits features via the IDpol join).
+    features:
+      - name: Area
+        type: ordinal_string
+        glm: one_hot
+        tree: ordinal
+        order: [A, B, C, D, E, F]
+
+      - name: VehPower
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: VehAge
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: DrivAge
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: BonusMalus
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: VehBrand
+        type: nominal_string
+        glm: one_hot
+        tree: label
+
+      - name: VehGas
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          Diesel: 0
+          Regular: 1
+
+      - name: Region
+        type: nominal_string
+        glm: one_hot
+        tree: label
+
+      - name: Density
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+  beMTPL97:
+    # Ordered list of feature columns used in beMTPL97 (freq and sev tasks share
+    # the same feature set; only the target and weight columns differ).
+    features:
+      - name: coverage
+        type: ordinal_string
+        glm: one_hot
+        tree: ordinal
+        order: ["TPL", "TPL+", "TPL++"]
+
+      - name: sex
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          female: 0
+          male: 1
+
+      - name: fuel
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          diesel: 0
+          gasoline: 1
+
+      - name: use
+        type: nominal_string
+        glm: one_hot
+        tree: label
+
+      - name: fleet
+        type: binary
+        glm: binary
+        tree: binary
+        # Values are the strings "0" and "1"; cast directly to int.
+        mapping:
+          "0": 0
+          "1": 1
+
+      - name: bm
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: power
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: agec
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
+
+      - name: ageph
+        type: ordinal_integer
+        glm: numeric
+        tree: numeric
