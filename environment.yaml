@@ -1,0 +1,55 @@
+name: tabpfn-insurance
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # ── Python ──────────────────────────────────────────────────
+  - python=3.11
+
+  # ── R + rpy2 (R must appear before rpy2) ────────────────────
+  - r-base>=4.3
+  - rpy2>=3.5
+  # CASdatasets R package dependencies — must be installed via conda, not CRAN.
+  # The conda R environment lacks the macOS SDK headers to compile C extensions
+  # from CRAN source; conda-forge provides pre-built binaries instead.
+  - r-lattice
+  - r-survival
+  - r-xts
+  - r-zoo
+  - r-matrix
+
+  # ── Core data / numerics ────────────────────────────────────
+  - numpy>=1.26
+  - pandas>=2.1
+  - scipy>=1.11
+  - pyarrow>=14.0        # parquet read/write for processed data
+
+  # ── Modelling ───────────────────────────────────────────────
+  - statsmodels>=0.14    # GLM (Poisson + Gamma)
+  - xgboost>=2.0
+
+  # ── Interpretability ────────────────────────────────────────
+  - shap>=0.44
+
+  # ── Config / utilities ──────────────────────────────────────
+  - pyyaml>=6.0
+  - tqdm>=4.66
+
+  # ── Jupyter ─────────────────────────────────────────────────
+  - jupyterlab>=4.0
+  - ipykernel>=6.0
+  - ipywidgets>=8.0
+
+  # ── Plotting ────────────────────────────────────────────────
+  - matplotlib>=3.8
+  - seaborn>=0.13
+
+  # ── pip (packages unavailable on conda-forge) ───────────────
+  # NOTE: PyTorch is intentionally excluded here — see environment.txt Step 2
+  #       for platform-specific installation (MPS / CUDA / CPU).
+  #       tabpfn depends on torch and must be installed after it (Step 3).
+  - pip
+  - pip:
+    - tabpfn>=0.1.10

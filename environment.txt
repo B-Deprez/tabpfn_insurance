@@ -1,0 +1,102 @@
+# Environment Setup
+# TabPFN for Insurance Pricing
+#
+# Read this file carefully before installing anything.
+# Steps must be followed in order — some packages have hard installation dependencies.
+# All commands assume you are in the project root directory.
+
+# ─────────────────────────────────────────────────────────────
+# STEP 1 — Create the conda environment (base packages + R)
+# ─────────────────────────────────────────────────────────────
+# This installs Python, R, rpy2, and all conda-available packages in one shot.
+# R must be installed via conda before rpy2; the environment.yaml handles this ordering
+# by listing r-base before rpy2 in the dependency list.
+
+conda env create -f environment.yaml
+conda activate tabpfn-insurance
+
+# ─────────────────────────────────────────────────────────────
+# STEP 2 — Install PyTorch (platform-specific)
+# ─────────────────────────────────────────────────────────────
+# PyTorch is NOT included in environment.yaml because the correct variant
+# depends on your hardware. Install exactly ONE of the options below.
+
+# Option A — Apple Silicon Mac (MPS backend, recommended for local dev)
+pip install torch torchvision torchaudio
+
+# Option B — Linux/Windows with CUDA 12.1
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Option C — CPU only (any platform, slowest)
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# After installing, verify the correct backend is available:
+#   python -c "import torch; print(torch.backends.mps.is_available(), torch.cuda.is_available())"
+
+# ─────────────────────────────────────────────────────────────
+# STEP 3 — Install TabPFN (pip-only, requires PyTorch from Step 2)
+# ─────────────────────────────────────────────────────────────
+# tabpfn is not available on conda-forge or the default channel.
+# It must be installed via pip after PyTorch is present.
+
+pip install tabpfn
+
+# ─────────────────────────────────────────────────────────────
+# STEP 4 — Install the CASdatasets R package
+# ─────────────────────────────────────────────────────────────
+# The R package CASdatasets is used via rpy2 to load freMTPL2freq,
+# freMTPL2sev, and bemtpl directly into Python. It is not on CRAN;
+# install from the project's own repository.
+
+conda install -c conda-forge r-lattice r-survival r-xts r-zoo r-matrix
+
+# CASdatasets depends on lattice, survival, xts (and their deps zoo, Matrix).
+# These must be installed via conda, NOT via R's install.packages from CRAN source.
+# Reason: the conda R environment lacks the macOS SDK headers needed to compile
+# C extensions, so any CRAN source build that touches C code fails with
+# "fatal error: 'stdlib.h' file not found". conda-forge ships pre-built binaries
+# that bypass compilation entirely.
+#
+# CASdatasets itself is pure R code (no C extensions), so it can be built from
+# source after the compiled dependencies are in place.
+
+Rscript -e "options(timeout=600); install.packages('CASdatasets', repos='http://cas.uqam.ca/pub/', type='source')"
+
+# The package is ~247 MB; the default R download timeout (60 s) is too short.
+# options(timeout=600) raises it to 10 minutes.
+
+# Verify:
+#   Rscript -e "library(CASdatasets); data(freMTPL2freq); cat(nrow(freMTPL2freq), '\n')"
+# Expected output: ~677991
+
+# ─────────────────────────────────────────────────────────────
+# STEP 5 — Register the kernel with Jupyter (optional)
+# ─────────────────────────────────────────────────────────────
+python -m ipykernel install --user --name tabpfn-insurance --display-name "TabPFN Insurance"
+
+# ─────────────────────────────────────────────────────────────
+# STEP 6 — Verify the full environment
+# ─────────────────────────────────────────────────────────────
+python - <<'EOF'
+import torch, tabpfn, xgboost, statsmodels, shap, rpy2, pandas, pyarrow
+print("torch      :", torch.__version__)
+print("tabpfn     :", tabpfn.__version__)
+print("xgboost    :", xgboost.__version__)
+print("statsmodels:", statsmodels.__version__)
+print("shap       :", shap.__version__)
+print("rpy2       :", rpy2.__version__)
+print("pandas     :", pandas.__version__)
+print("pyarrow    :", pyarrow.__version__)
+device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+print("device     :", device)
+EOF
+
+# ─────────────────────────────────────────────────────────────
+# Notes on known caveats
+# ─────────────────────────────────────────────────────────────
+# - rpy2 requires R to be installed first (handled by environment.yaml ordering).
+# - tabpfn requires torch to be installed first (handled by Step 2 → Step 3 ordering).
+# - CASdatasets is not on CRAN; it must be fetched from the UQAM mirror (Step 4).
+# - On Apple Silicon, MPS acceleration works out of the box with Option A above.
+# - On Linux with CUDA, replace Step 2 Option A with Option B and match the CUDA version
+#   to your driver (check: nvidia-smi | grep "CUDA Version").
