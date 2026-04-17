@@ -1,0 +1,234 @@
+"""TabPFN wrapper for insurance pricing (frequency and severity).
+
+TabPFN-2.6 handles mixed data types (strings, integers, floats) and missing
+values natively — no feature encoding is required.  Raw feature columns from
+``get_raw_features()`` are passed directly to the model.
+
+Exposure strategy B is used throughout:
+    Frequency  : response = ClaimNb / Exposure (annualised rate)
+    Severity   : response = log(AvgSeverity) (log-transformed),
+                 predictions inverted with exp()
+
+TabPFNRegressor.fit() accepts only (X, y) — no sample_weight argument.
+
+Device auto-detection order: CUDA → MPS → CPU.
+
+Training is capped at ``max_train_size`` rows.  When the training fold
+exceeds this limit a random subsample is drawn (seed = fold_seed).
+"""
+
+from __future__ import annotations
+
+import logging
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+def _detect_device() -> str:
+    """Return the best available device string for TabPFN."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():
+            return "mps"
+    except ImportError:
+        pass
+    return "cpu"
+
+
+def _subsample(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    max_size: int,
+    seed: int,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Return (X_sub, y_sub) subsampled to at most ``max_size`` rows."""
+    n = len(X)
+    if n <= max_size:
+        return X, y
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(n, size=max_size, replace=False)
+    return X.iloc[idx].reset_index(drop=True), y[idx]
+
+
+class TabPFNFreq:
+    """TabPFN-2.6 regressor for frequency modelling (Strategy B).
+
+    Raw unencoded features are passed directly to TabPFN.
+    Response = ClaimNb / Exposure (annualised rate).
+    """
+
+    def __init__(self, max_train_size: int = 100_000) -> None:
+        self.max_train_size = max_train_size
+        self._model = None
+        self._feature_names: list[str] = []
+        self._device = _detect_device()
+        logger.info("TabPFNFreq: device=%s, max_train_size=%d", self._device, max_train_size)
+
+    def fit(
+        self,
+        X_train: pd.DataFrame,
+        y_train: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+        log_exposure: np.ndarray | None = None,
+        fold_seed: int = 0,
+    ) -> "TabPFNFreq":
+        """Fit TabPFN on raw features with Strategy B response.
+
+        Args:
+            X_train: raw (unencoded) feature DataFrame.
+            y_train: claim counts (NOT rates — conversion is done here).
+            sample_weight: exposure array used to compute the rate response.
+            log_exposure: unused; accepted for interface parity with GLM/XGBoost.
+            fold_seed: RNG seed for the subsample draw.
+        """
+        from tabpfn import TabPFNRegressor
+
+        self._feature_names = list(X_train.columns)
+        exposure = sample_weight if sample_weight is not None else np.ones(len(y_train))
+
+        # Strategy B: response = annualised rate
+        y_rate = y_train / np.maximum(exposure, 1e-10)
+
+        X_sub, y_sub = _subsample(X_train, y_rate, self.max_train_size, fold_seed)
+        if len(X_sub) < len(X_train):
+            logger.info(
+                "TabPFNFreq: subsampled %d → %d rows (seed=%d)",
+                len(X_train), len(X_sub), fold_seed,
+            )
+
+        self._model = TabPFNRegressor(device=self._device)
+        self._model.fit(X_sub, y_sub)
+        logger.info("TabPFNFreq fitted on %d rows", len(X_sub))
+        return self
+
+    def predict(
+        self,
+        X_test: pd.DataFrame,
+        log_exposure: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return predicted claim rates."""
+        if self._model is None:
+            raise RuntimeError("Model has not been fitted yet")
+        return self._model.predict(X_test)
+
+    @property
+    def feature_names(self) -> list[str]:
+        return self._feature_names
+
+
+class TabPFNSev:
+    """TabPFN-2.6 regressor for severity modelling (Strategy B + log-transform).
+
+    Raw unencoded features are passed directly to TabPFN.
+    Response = log(AvgSeverity); predictions are inverted with exp().
+    """
+
+    def __init__(self, max_train_size: int = 100_000) -> None:
+        self.max_train_size = max_train_size
+        self._model = None
+        self._feature_names: list[str] = []
+        self._device = _detect_device()
+        logger.info("TabPFNSev: device=%s, max_train_size=%d", self._device, max_train_size)
+
+    def fit(
+        self,
+        X_train: pd.DataFrame,
+        y_train: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+        log_exposure: np.ndarray | None = None,
+        fold_seed: int = 0,
+    ) -> "TabPFNSev":
+        """Fit TabPFN on log-transformed average severity.
+
+        Args:
+            X_train: raw (unencoded) feature DataFrame.
+            y_train: average severity (AvgSeverity = ClaimAmount / ClaimNb).
+            sample_weight: accepted for interface parity; not used (TabPFN
+                does not support sample_weight in fit()).
+            log_exposure: unused for severity; accepted for interface parity.
+            fold_seed: RNG seed for the subsample draw.
+        """
+        from tabpfn import TabPFNRegressor
+
+        self._feature_names = list(X_train.columns)
+
+        # Log-transform response (CLAUDE.md §Feature Encoding)
+        log_y = np.log(np.maximum(y_train, 1e-10))
+
+        X_sub, y_sub = _subsample(X_train, log_y, self.max_train_size, fold_seed)
+        if len(X_sub) < len(X_train):
+            logger.info(
+                "TabPFNSev: subsampled %d → %d rows (seed=%d)",
+                len(X_train), len(X_sub), fold_seed,
+            )
+
+        self._model = TabPFNRegressor(device=self._device)
+        self._model.fit(X_sub, y_sub)
+        logger.info("TabPFNSev fitted on %d rows", len(X_sub))
+        return self
+
+    def predict(
+        self,
+        X_test: pd.DataFrame,
+        log_exposure: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return predicted average severity (exp of log-space prediction)."""
+        if self._model is None:
+            raise RuntimeError("Model has not been fitted yet")
+        return np.exp(self._model.predict(X_test))
+
+    def get_shap_values(self, X_test: pd.DataFrame) -> np.ndarray:
+        """Return SHAP values in log-space from TabPFN's built-in explainer."""
+        if self._model is None:
+            raise RuntimeError("Model has not been fitted yet")
+        if hasattr(self._model, "get_shap_values"):
+            return self._model.get_shap_values(X_test)
+        logger.warning("TabPFN built-in SHAP not available; falling back to KernelExplainer")
+        import shap
+        bg = X_test.iloc[:min(100, len(X_test))]
+        explainer = shap.KernelExplainer(self._model.predict, bg)
+        return explainer.shap_values(X_test, nsamples=100)
+
+    @property
+    def feature_names(self) -> list[str]:
+        return self._feature_names
+
+
+class TabPFNFreqWithShap(TabPFNFreq):
+    """TabPFNFreq extended with SHAP computation (used by run_q3_shap.py)."""
+
+    def get_shap_values(self, X_test: pd.DataFrame) -> np.ndarray:
+        """Return SHAP values from TabPFN's built-in explainer or KernelExplainer."""
+        if self._model is None:
+            raise RuntimeError("Model has not been fitted yet")
+        if hasattr(self._model, "get_shap_values"):
+            return self._model.get_shap_values(X_test)
+        logger.warning("TabPFN built-in SHAP not available; falling back to KernelExplainer")
+        import shap
+        bg = X_test.iloc[:min(100, len(X_test))]
+        explainer = shap.KernelExplainer(self._model.predict, bg)
+        return explainer.shap_values(X_test, nsamples=100)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Factory
+# ──────────────────────────────────────────────────────────────────────────────
+
+def make_tabpfn(task: str, max_train_size: int = 100_000, shap: bool = False):
+    """Return the appropriate TabPFN-2.6 wrapper for the given task.
+
+    Args:
+        task: ``"freq"`` or ``"sev"``.
+        max_train_size: maximum training rows (TabPFN-2.6 ceiling = 100,000).
+        shap: if True, return a SHAP-capable variant for Q3.
+    """
+    if task == "freq":
+        return TabPFNFreqWithShap(max_train_size) if shap else TabPFNFreq(max_train_size)
+    if task == "sev":
+        return TabPFNSev(max_train_size)
+    raise ValueError(f"Unknown task '{task}'")
