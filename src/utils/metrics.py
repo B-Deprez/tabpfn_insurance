@@ -3,10 +3,10 @@
 Primary metrics:
     poisson_deviance  — frequency modelling
     gamma_deviance    — severity modelling
+    auc_roc           — binary classification (fretelematic)
 
-Both are computed at the observation level and then averaged (optionally
-weighted).  Use ``pooled_poisson_deviance`` / ``pooled_gamma_deviance`` for
-the aggregate OOF score.
+Both deviance functions are computed at the observation level and then averaged
+(optionally weighted).  Use ``pooled_*`` variants for the aggregate OOF score.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+from sklearn.metrics import roc_auc_score
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,31 @@ def pooled_gamma_deviance(
     mu = np.concatenate(mus)
     w = np.concatenate(sample_weights) if sample_weights is not None else None
     return gamma_deviance(y, mu, w)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AUC-ROC
+# ──────────────────────────────────────────────────────────────────────────────
+
+def auc_roc(y_true: np.ndarray, y_score: np.ndarray) -> float:
+    """Compute the Area Under the ROC Curve.
+
+    Args:
+        y_true: binary ground-truth labels (0/1).
+        y_score: predicted probabilities for the positive class.
+
+    Returns:
+        Scalar AUC-ROC value in [0, 1].
+    """
+    return float(roc_auc_score(np.asarray(y_true, dtype=int), np.asarray(y_score, dtype=float)))
+
+
+def pooled_auc_roc(
+    y_trues: list[np.ndarray],
+    y_scores: list[np.ndarray],
+) -> float:
+    """Compute AUC-ROC on concatenated out-of-fold predictions."""
+    return auc_roc(np.concatenate(y_trues), np.concatenate(y_scores))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

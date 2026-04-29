@@ -34,8 +34,8 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def append_results(rows: list[dict]) -> None:
-    """Append one or more result rows to ``res/results.csv``.
+def append_results(rows: list[dict], output_path: Path | None = None) -> None:
+    """Append one or more result rows to a results CSV file.
 
     Creates the file with a header row if it does not exist.  Never
     overwrites existing data.
@@ -44,12 +44,15 @@ def append_results(rows: list[dict]) -> None:
         rows: list of dicts.  Each dict must contain all keys in
             ``RESULT_COLUMNS``.  A ``timestamp`` key is added automatically
             if absent.
+        output_path: path to the CSV file.  Defaults to ``res/results.csv``.
 
     Raises:
         ValueError: if any required column is missing from a row.
     """
     if not rows:
         return
+
+    path = output_path if output_path is not None else RESULTS_PATH
 
     # Validate and fill timestamp
     enriched = []
@@ -64,13 +67,11 @@ def append_results(rows: list[dict]) -> None:
 
     df_new = pd.DataFrame(enriched, columns=RESULT_COLUMNS)
 
-    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    write_header = not RESULTS_PATH.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists()
 
-    df_new.to_csv(RESULTS_PATH, mode="a", header=write_header, index=False)
-    logger.info(
-        "Appended %d result row(s) to %s", len(rows), RESULTS_PATH
-    )
+    df_new.to_csv(path, mode="a", header=write_header, index=False)
+    logger.info("Appended %d result row(s) to %s", len(rows), path)
 
 
 def build_result_row(
