@@ -133,3 +133,89 @@ datasets:
         type: ordinal_integer
         glm: numeric
         tree: numeric
+
+  fretelematic:
+    # French telematics dataset (1,177 policies).  Target = Claim (binary).
+    # Policy_ID is excluded (identifier, not a feature).
+    features:
+      - name: Total_Distance
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Drive_Score
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Time_Day
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Style_Score
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Corner_Score
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Acceleration_Score
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Braking_Score
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Total_Night_Time
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Total_Time
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Insured_Age
+        type: numeric
+        glm: numeric
+        tree: numeric
+
+      - name: Acceleration
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          Low: 0
+          High: 1
+
+      - name: Brake
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          Low: 0
+          High: 1
+
+      - name: Corner
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          Low: 0
+          High: 1
+
+      - name: Insured_Gender
+        type: binary
+        glm: binary
+        tree: binary
+        mapping:
+          F: 0
+          M: 1

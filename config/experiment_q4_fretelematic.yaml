@@ -1,0 +1,15 @@
+# Q4 — fretelematic binary classification benchmark.
+# ──────────────────────────────────────────────────────────────────────────────
+# Compares GLM (logistic), XGBoost, and TabPFN on the fretelematic telematics
+# dataset (1,177 policies).  Primary metric: AUC-ROC.
+# Separate mini-section in the paper with its own results table.
+
+experiment_id: experiment_q4_fretelematic
+dataset: fretelematic
+task: clf
+models: [glm, xgboost, tabpfn]
+cv_seed: 42
+cv_folds: 5
+
+tabpfn:
+  max_train_size: 10000   # all 1,177 rows fit; ceiling retained for consistency

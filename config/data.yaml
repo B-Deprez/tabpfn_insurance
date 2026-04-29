@@ -66,3 +66,12 @@ datasets:
         description: "Remove records with exposure exceeding one year (implausible)"
       - filter: "nclaims >= 0"
         description: "Remove records with negative claim counts"
+
+  fretelematic:
+    # French telematics dataset (1,177 policies) from CASdatasets.
+    # Binary classification: target = Claim ("yes"/"no").
+    # No cleaning required — dataset is already clean.
+    r_object: fretelematic
+    expected_rows: 1177
+    clf:
+      target_col: Claim
