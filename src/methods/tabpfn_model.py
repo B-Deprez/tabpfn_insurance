@@ -1,4 +1,4 @@
-"""TabPFN wrapper for insurance pricing (frequency and severity).
+"""TabPFN wrappers for insurance pricing (frequency, severity, and binary classification).
 
 TabPFN-2.6 handles mixed data types (strings, integers, floats) and missing
 values natively — no feature encoding is required.  Raw feature columns from
@@ -199,6 +199,69 @@ class TabPFNSev:
         return self._feature_names
 
 
+class TabPFNClf:
+    """TabPFN-2.6 classifier for binary classification tasks.
+
+    Raw unencoded features are passed directly to TabPFN.
+    ``predict()`` returns the probability of class 1 (claim).
+    """
+
+    def __init__(self, max_train_size: int = 100_000) -> None:
+        self.max_train_size = max_train_size
+        self._model = None
+        self._feature_names: list[str] = []
+        self._device = _detect_device()
+        logger.info("TabPFNClf: device=%s, max_train_size=%d", self._device, max_train_size)
+
+    def fit(
+        self,
+        X_train: pd.DataFrame,
+        y_train: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+        log_exposure: np.ndarray | None = None,
+        fold_seed: int = 0,
+    ) -> "TabPFNClf":
+        """Fit TabPFN classifier on raw features.
+
+        Args:
+            X_train: raw (unencoded) feature DataFrame.
+            y_train: binary labels (0/1).
+            sample_weight: accepted for interface parity; not used.
+            log_exposure: accepted for interface parity; not used.
+            fold_seed: RNG seed for the subsample draw.
+        """
+        from tabpfn import TabPFNClassifier
+
+        self._feature_names = list(X_train.columns)
+        y_int = y_train.astype(int)
+
+        X_sub, y_sub = _subsample(X_train, y_int, self.max_train_size, fold_seed)
+        if len(X_sub) < len(X_train):
+            logger.info(
+                "TabPFNClf: subsampled %d → %d rows (seed=%d)",
+                len(X_train), len(X_sub), fold_seed,
+            )
+
+        self._model = TabPFNClassifier(device=self._device)
+        self._model.fit(X_sub, y_sub)
+        logger.info("TabPFNClf fitted on %d rows", len(X_sub))
+        return self
+
+    def predict(
+        self,
+        X_test: pd.DataFrame,
+        log_exposure: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return predicted claim probabilities (probability of class 1)."""
+        if self._model is None:
+            raise RuntimeError("Model has not been fitted yet")
+        return self._model.predict_proba(X_test)[:, 1]
+
+    @property
+    def feature_names(self) -> list[str]:
+        return self._feature_names
+
+
 class TabPFNFreqWithShap(TabPFNFreq):
     """TabPFNFreq extended with SHAP computation (used by run_q3_shap.py)."""
 
@@ -223,12 +286,14 @@ def make_tabpfn(task: str, max_train_size: int = 100_000, shap: bool = False):
     """Return the appropriate TabPFN-2.6 wrapper for the given task.
 
     Args:
-        task: ``"freq"`` or ``"sev"``.
+        task: ``"freq"``, ``"sev"``, or ``"clf"``.
         max_train_size: maximum training rows (TabPFN-2.6 ceiling = 100,000).
-        shap: if True, return a SHAP-capable variant for Q3.
+        shap: if True, return a SHAP-capable variant for Q3 (freq/sev only).
     """
     if task == "freq":
         return TabPFNFreqWithShap(max_train_size) if shap else TabPFNFreq(max_train_size)
     if task == "sev":
         return TabPFNSev(max_train_size)
+    if task == "clf":
+        return TabPFNClf(max_train_size)
     raise ValueError(f"Unknown task '{task}'")

@@ -1,4 +1,4 @@
-"""GLM wrapper for Poisson (frequency) and Gamma (severity) regression.
+"""GLM wrappers for Poisson (frequency), Gamma (severity), and Logistic (binary) regression.
 
 Uses statsmodels with a log link.  Frequency models include a log-exposure
 offset; severity models use ClaimNb as observation weights.
@@ -150,18 +150,79 @@ class GammaGLM:
         return pd.Series(self._result.params, index=names, name="coefficient")
 
 
+class LogisticGLM:
+    """Logistic regression (Binomial GLM with logit link) for binary classification.
+
+    Returns predicted probabilities from ``predict()``.
+    """
+
+    def __init__(self) -> None:
+        self._result = None
+        self._feature_names: list[str] = []
+
+    def fit(
+        self,
+        X_train: pd.DataFrame,
+        y_train: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+        log_exposure: np.ndarray | None = None,
+    ) -> "LogisticGLM":
+        """Fit the logistic regression model.
+
+        Args:
+            X_train: encoded feature matrix.
+            y_train: binary labels (0/1).
+            sample_weight: accepted for interface parity; not used.
+            log_exposure: accepted for interface parity; not used.
+        """
+        self._feature_names = list(X_train.columns)
+        X = sm.add_constant(X_train.to_numpy(dtype=float), has_constant="add")
+        glm = sm.GLM(
+            y_train,
+            X,
+            family=sm.families.Binomial(sm.families.links.Logit()),
+        )
+        self._result = glm.fit(disp=False)
+        logger.info(
+            "LogisticGLM fitted: %d params, converged=%s",
+            len(self._result.params),
+            self._result.converged,
+        )
+        return self
+
+    def predict(
+        self,
+        X_test: pd.DataFrame,
+        log_exposure: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return predicted claim probabilities."""
+        if self._result is None:
+            raise RuntimeError("Model has not been fitted yet")
+        X = sm.add_constant(X_test.to_numpy(dtype=float), has_constant="add")
+        return self._result.predict(X)
+
+    def get_coefficients(self) -> pd.Series:
+        """Return fitted coefficients as a Series indexed by feature name."""
+        if self._result is None:
+            raise RuntimeError("Model has not been fitted yet")
+        names = ["const"] + self._feature_names
+        return pd.Series(self._result.params, index=names, name="coefficient")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Factory
 # ──────────────────────────────────────────────────────────────────────────────
 
-def make_glm(task: str) -> PoissonGLM | GammaGLM:
+def make_glm(task: str) -> PoissonGLM | GammaGLM | LogisticGLM:
     """Return the appropriate GLM for the given task.
 
     Args:
-        task: ``"freq"`` or ``"sev"``.
+        task: ``"freq"``, ``"sev"``, or ``"clf"``.
     """
     if task == "freq":
         return PoissonGLM()
     if task == "sev":
         return GammaGLM()
+    if task == "clf":
+        return LogisticGLM()
     raise ValueError(f"Unknown task '{task}'")

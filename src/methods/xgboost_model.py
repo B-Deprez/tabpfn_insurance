@@ -1,4 +1,4 @@
-"""XGBoost wrapper with fixed Henckaerts et al. (2021) hyperparameters.
+"""XGBoost wrappers with fixed Henckaerts et al. (2021) hyperparameters.
 
 Frequency: objective = count:poisson, log-exposure enters via base_margin.
 Severity:  objective = reg:gamma, ClaimNb as sample_weight.
@@ -159,18 +159,73 @@ class GammaXGBoost:
         return self._feature_names
 
 
+class BinaryXGBoost:
+    """XGBoost binary classifier for binary classification tasks.
+
+    Uses ``binary:logistic`` objective; ``predict()`` returns probabilities.
+    """
+
+    def __init__(self) -> None:
+        self._model: xgb.XGBClassifier | None = None
+        self._feature_names: list[str] = []
+
+    def fit(
+        self,
+        X_train: pd.DataFrame,
+        y_train: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+        log_exposure: np.ndarray | None = None,
+    ) -> "BinaryXGBoost":
+        """Fit the binary XGBoost classifier.
+
+        Args:
+            X_train: encoded feature matrix.
+            y_train: binary labels (0/1).
+            sample_weight: accepted for interface parity; not used.
+            log_exposure: accepted for interface parity; not used.
+        """
+        self._feature_names = list(X_train.columns)
+        self._model = xgb.XGBClassifier(
+            objective="binary:logistic",
+            **_HENCKAERTS_PARAMS,
+        )
+        self._model.fit(X_train, y_train.astype(int))
+        logger.info(
+            "BinaryXGBoost fitted: %d estimators, %d features",
+            self._model.n_estimators,
+            len(self._feature_names),
+        )
+        return self
+
+    def predict(
+        self,
+        X_test: pd.DataFrame,
+        log_exposure: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return predicted claim probabilities (probability of class 1)."""
+        if self._model is None:
+            raise RuntimeError("Model has not been fitted yet")
+        return self._model.predict_proba(X_test)[:, 1]
+
+    @property
+    def feature_names(self) -> list[str]:
+        return self._feature_names
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Factory
 # ──────────────────────────────────────────────────────────────────────────────
 
-def make_xgboost(task: str) -> PoissonXGBoost | GammaXGBoost:
+def make_xgboost(task: str) -> PoissonXGBoost | GammaXGBoost | BinaryXGBoost:
     """Return the appropriate XGBoost model for the given task.
 
     Args:
-        task: ``"freq"`` or ``"sev"``.
+        task: ``"freq"``, ``"sev"``, or ``"clf"``.
     """
     if task == "freq":
         return PoissonXGBoost()
     if task == "sev":
         return GammaXGBoost()
+    if task == "clf":
+        return BinaryXGBoost()
     raise ValueError(f"Unknown task '{task}'")
