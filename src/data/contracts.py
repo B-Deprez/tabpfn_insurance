@@ -167,6 +167,41 @@ def validate_beMTPL97(df: pd.DataFrame, task: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# fretelematic contracts
+# ──────────────────────────────────────────────────────────────────────────────
+
+_FRETELEMATIC_EXPECTED_ROWS = 1_177
+
+_FRETELEMATIC_REQUIRED_COLS = [
+    "Policy_ID", "Claim", "Claim_binary",
+    "Total_Distance", "Drive_Score", "Time_Day", "Style_Score",
+    "Corner_Score", "Acceleration_Score", "Braking_Score",
+    "Total_Night_Time", "Total_Time", "Insured_Age",
+    "Acceleration", "Brake", "Corner", "Insured_Gender",
+]
+
+
+def validate_fretelematic(df: pd.DataFrame) -> None:
+    """Validate a loaded fretelematic DataFrame.
+
+    Args:
+        df: DataFrame returned by ``load_fretelematic``.
+
+    Raises:
+        ValueError: on any contract violation.
+    """
+    label = "fretelematic_clf"
+    _check_row_count(df, _FRETELEMATIC_EXPECTED_ROWS, label)
+    _check_columns(df, _FRETELEMATIC_REQUIRED_COLS, label)
+    _check_no_nulls(df, ["Claim", "Claim_binary"], label)
+    if not set(df["Claim"].unique()).issubset({"yes", "no"}):
+        raise ValueError(f"[{label}] Claim column contains unexpected values: {df['Claim'].unique()}")
+    if not set(df["Claim_binary"].unique()).issubset({0, 1}):
+        raise ValueError(f"[{label}] Claim_binary must contain only 0 and 1")
+    logger.info("[%s] All contracts passed", label)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Post-split fold-level contract
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -213,12 +248,14 @@ def validate_dataset(df: pd.DataFrame, dataset: str, task: str) -> None:
 
     Args:
         df: loaded DataFrame.
-        dataset: ``"freMTPL2"`` or ``"beMTPL97"``.
-        task: ``"freq"`` or ``"sev"``.
+        dataset: ``"freMTPL2"``, ``"beMTPL97"``, or ``"fretelematic"``.
+        task: ``"freq"``, ``"sev"``, or ``"clf"``.
     """
     if dataset == "freMTPL2":
         validate_freMTPL2(df, task)
     elif dataset == "beMTPL97":
         validate_beMTPL97(df, task)
+    elif dataset == "fretelematic":
+        validate_fretelematic(df)
     else:
         raise ValueError(f"Unknown dataset '{dataset}'")

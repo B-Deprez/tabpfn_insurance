@@ -18,11 +18,14 @@ logger = logging.getLogger(__name__)
 
 
 def _claim_indicator_col(dataset: str) -> str:
-    """Return the claim-count column name for the given dataset."""
+    """Return the claim indicator column name for the given dataset."""
     if dataset == "freMTPL2":
         return "ClaimNb"
     if dataset == "beMTPL97":
         return "nclaims"
+    if dataset == "fretelematic":
+        # Claim_binary is 0/1; comparison > 0 in make_cv_splits works directly.
+        return "Claim_binary"
     raise ValueError(f"Unknown dataset '{dataset}'")
 
 

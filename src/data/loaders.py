@@ -1,4 +1,4 @@
-"""Data loading utilities for freMTPL2 and beMTPL97 datasets.
+"""Data loading utilities for freMTPL2, beMTPL97, and fretelematic datasets.
 
 Datasets are loaded via rpy2 from the CASdatasets R package and optionally
 cached as parquet files in data/processed/ for faster subsequent access.
@@ -280,6 +280,34 @@ def load_beMTPL97_sev(cfg: dict | None = None) -> pd.DataFrame:
     return df
 
 
+def load_fretelematic(cfg: dict | None = None) -> pd.DataFrame:
+    """Load the fretelematic dataset for binary classification.
+
+    Loads the ``fretelematic`` object from CASdatasets via rpy2.  No cleaning
+    is applied — the dataset is already clean.  A ``Claim_binary`` column
+    (0 = no claim, 1 = claim) is derived from the raw ``Claim`` column to
+    support CV stratification and target extraction.
+    """
+    if cfg is None:
+        cfg = _load_data_cfg()
+    use_cache = cfg.get("cache_processed", True)
+
+    if use_cache:
+        cached = _try_cache("fretelematic")
+        if cached is not None:
+            return cached
+
+    ds_cfg = cfg["datasets"]["fretelematic"]
+    df = _load_r_dataset(ds_cfg["r_object"])
+
+    # Derive binary target: 1 if claim, 0 otherwise
+    df["Claim_binary"] = (df["Claim"] == "yes").astype(int)
+
+    if use_cache:
+        _write_cache(df, "fretelematic")
+    return df
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Convenience dispatcher
 # ──────────────────────────────────────────────────────────────────────────────
@@ -288,8 +316,8 @@ def load_dataset(dataset: str, task: str, cfg: dict | None = None) -> pd.DataFra
     """Dispatch to the appropriate loader.
 
     Args:
-        dataset: ``"freMTPL2"`` or ``"beMTPL97"``
-        task: ``"freq"`` or ``"sev"``
+        dataset: ``"freMTPL2"``, ``"beMTPL97"``, or ``"fretelematic"``
+        task: ``"freq"``, ``"sev"``, or ``"clf"``
         cfg: optional pre-loaded data config dict
 
     Returns:
@@ -300,6 +328,7 @@ def load_dataset(dataset: str, task: str, cfg: dict | None = None) -> pd.DataFra
         ("freMTPL2", "sev"): load_freMTPL2_sev,
         ("beMTPL97", "freq"): load_beMTPL97_freq,
         ("beMTPL97", "sev"): load_beMTPL97_sev,
+        ("fretelematic", "clf"): load_fretelematic,
     }
     key = (dataset, task)
     if key not in loaders:

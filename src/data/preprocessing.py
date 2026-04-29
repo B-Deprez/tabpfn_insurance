@@ -298,6 +298,10 @@ def get_targets(
         else:
             y = df["AvgSeverity"].to_numpy(dtype=float)
             weight = df["nclaims"].to_numpy(dtype=float)
+    elif dataset == "fretelematic":
+        # Binary classification: y = 0/1, no exposure weighting.
+        y = df["Claim_binary"].to_numpy(dtype=float)
+        weight = np.ones(len(df))
     else:
         raise ValueError(f"Unknown dataset '{dataset}'")
 
