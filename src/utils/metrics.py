@@ -5,6 +5,10 @@ Primary metrics:
     gamma_deviance    — severity modelling
     auc_roc           — binary classification (fretelematic)
 
+Secondary error-based metrics:
+    rmse, mae                    — severity (unweighted by default)
+    exposure_weighted_rmse_rate  — frequency (rate scale, exposure weights)
+
 Both deviance functions are computed at the observation level and then averaged
 (optionally weighted).  Use ``pooled_*`` variants for the aggregate OOF score.
 """
@@ -14,7 +18,11 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import (
+    mean_absolute_error,
+    roc_auc_score,
+    root_mean_squared_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +136,83 @@ def pooled_gamma_deviance(
     mu = np.concatenate(mus)
     w = np.concatenate(sample_weights) if sample_weights is not None else None
     return gamma_deviance(y, mu, w)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RMSE / MAE  (severity — unweighted by default)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def rmse(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+) -> float:
+    """Root mean squared error (optionally weighted).
+
+    Args:
+        y_true: observed values.
+        y_pred: predicted values.
+        sample_weight: optional observation weights.  Defaults to uniform.
+
+    Returns:
+        Scalar RMSE.
+    """
+    return float(
+        root_mean_squared_error(
+            np.asarray(y_true, dtype=float),
+            np.asarray(y_pred, dtype=float),
+            sample_weight=sample_weight,
+        )
+    )
+
+
+def mae(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+) -> float:
+    """Mean absolute error (optionally weighted).
+
+    Args:
+        y_true: observed values.
+        y_pred: predicted values.
+        sample_weight: optional observation weights.  Defaults to uniform.
+
+    Returns:
+        Scalar MAE.
+    """
+    return float(
+        mean_absolute_error(
+            np.asarray(y_true, dtype=float),
+            np.asarray(y_pred, dtype=float),
+            sample_weight=sample_weight,
+        )
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Exposure-weighted RMSE (frequency — rate scale)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def exposure_weighted_rmse_rate(
+    y_rate_true: np.ndarray,
+    y_rate_pred: np.ndarray,
+    exposure: np.ndarray,
+) -> float:
+    """RMSE on the claim-rate scale, weighted by exposure.
+
+    Both inputs must already be in claims-per-unit-exposure (i.e.
+    ``y_count / exposure`` and the model's rate prediction).
+
+    Args:
+        y_rate_true: observed claim rate (counts / exposure).
+        y_rate_pred: predicted claim rate.
+        exposure: per-observation exposure used as the sample weight.
+
+    Returns:
+        Scalar exposure-weighted RMSE on the rate scale.
+    """
+    return rmse(y_rate_true, y_rate_pred, sample_weight=exposure)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

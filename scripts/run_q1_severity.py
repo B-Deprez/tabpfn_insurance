@@ -30,10 +30,11 @@ from src.data.preprocessing import encode_features, get_raw_features, get_target
 from src.methods.glm_model import make_glm
 from src.methods.xgboost_model import make_xgboost
 from src.methods.tabpfn_model import make_tabpfn
-from src.utils.metrics import gamma_deviance, pooled_gamma_deviance
+from src.utils.metrics import gamma_deviance, mae, pooled_gamma_deviance, rmse
 from src.utils.results import append_results, build_result_row
 
 CFG_PATH = PROJECT_ROOT / "config" / "experiment_q1_severity.yaml"
+ERROR_METRICS_PATH = PROJECT_ROOT / "res" / "results_error_metrics.csv"
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +77,7 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         all_mu: list[np.ndarray] = []
         all_w: list[np.ndarray] = []
         result_rows: list[dict] = []
+        error_rows: list[dict] = []
 
         for fold in range(n_folds):
             train_df, test_df = get_fold(df, splits, fold)
@@ -111,14 +113,16 @@ def run_dataset(dataset: str, cfg: dict) -> None:
 
             # Evaluate
             dev = gamma_deviance(y_test, mu_test, sample_weight=w_test)
+            fold_rmse = rmse(y_test, mu_test)
+            fold_mae = mae(y_test, mu_test)
             fold_deviances.append(dev)
             all_y.append(y_test)
             all_mu.append(mu_test)
             all_w.append(w_test)
 
             logger.info(
-                "  Fold %d: gamma_deviance=%.6f  time=%.1fs",
-                fold, dev, elapsed,
+                "  Fold %d: gamma_deviance=%.6f  rmse=%.6f  mae=%.6f  time=%.1fs",
+                fold, dev, fold_rmse, fold_mae, elapsed,
             )
 
             result_rows.append(build_result_row(
@@ -128,6 +132,14 @@ def run_dataset(dataset: str, cfg: dict) -> None:
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
                 "fit_predict_seconds", elapsed,
+            ))
+            error_rows.append(build_result_row(
+                experiment_id, dataset, model_name, task, fold,
+                "rmse", fold_rmse,
+            ))
+            error_rows.append(build_result_row(
+                experiment_id, dataset, model_name, task, fold,
+                "mae", fold_mae,
             ))
 
         # Pooled OOF score
@@ -145,6 +157,7 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         )
 
         append_results(result_rows)
+        append_results(error_rows, output_path=ERROR_METRICS_PATH)
 
 
 def main() -> None:

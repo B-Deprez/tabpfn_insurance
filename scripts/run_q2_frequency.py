@@ -33,10 +33,15 @@ from src.data.preprocessing import encode_features, get_raw_features, get_target
 from src.methods.glm_model import make_glm
 from src.methods.xgboost_model import make_xgboost
 from src.methods.tabpfn_model import TabPFNFreq
-from src.utils.metrics import poisson_deviance, pooled_poisson_deviance
+from src.utils.metrics import (
+    exposure_weighted_rmse_rate,
+    poisson_deviance,
+    pooled_poisson_deviance,
+)
 from src.utils.results import append_results, build_result_row
 
 CFG_PATH = PROJECT_ROOT / "config" / "experiment_q2_frequency.yaml"
+ERROR_METRICS_PATH = PROJECT_ROOT / "res" / "results_error_metrics.csv"
 logger = logging.getLogger(__name__)
 
 
@@ -66,6 +71,7 @@ def run_baselines(
         all_mu: list[np.ndarray] = []
         all_e: list[np.ndarray] = []
         result_rows: list[dict] = []
+        error_rows: list[dict] = []
 
         for fold in range(n_folds):
             train_df, test_df = get_fold(df, splits, fold)
@@ -82,12 +88,17 @@ def run_baselines(
             elapsed = time.perf_counter() - t0
 
             dev = poisson_deviance(y_test, mu_test, w_test, sample_weight=w_test)
+            y_rate_test = y_test / np.maximum(w_test, 1e-10)
+            fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
             fold_deviances.append(dev)
             all_y.append(y_test)
             all_mu.append(mu_test)
             all_e.append(w_test)
 
-            logger.info("  Fold %d: poisson_deviance=%.6f  time=%.1fs", fold, dev, elapsed)
+            logger.info(
+                "  Fold %d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
+                fold, dev, fold_rmse_rate, elapsed,
+            )
 
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
@@ -96,6 +107,10 @@ def run_baselines(
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
                 "fit_predict_seconds", elapsed,
+            ))
+            error_rows.append(build_result_row(
+                experiment_id, dataset, model_name, task, fold,
+                "exposure_weighted_rmse_rate", fold_rmse_rate,
             ))
 
         pooled = pooled_poisson_deviance(all_y, all_mu, all_e, all_e)
@@ -112,6 +127,7 @@ def run_baselines(
             pooled,
         )
         append_results(result_rows)
+        append_results(error_rows, output_path=ERROR_METRICS_PATH)
 
 
 def run_tabpfn_subsample(
@@ -172,9 +188,11 @@ def run_tabpfn_subsample(
             elapsed = time.perf_counter() - t0
 
             dev = poisson_deviance(y_test, mu_test, w_test, sample_weight=w_test)
+            y_rate_test = y_test / np.maximum(w_test, 1e-10)
+            fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
             logger.info(
-                "  Fold %d | size=%d: poisson_deviance=%.6f  time=%.1fs",
-                fold, actual_size, dev, elapsed,
+                "  Fold %d | size=%d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
+                fold, actual_size, dev, fold_rmse_rate, elapsed,
             )
 
             # Store model name as "tabpfn_<size>" for plot differentiation
@@ -189,7 +207,14 @@ def run_tabpfn_subsample(
                     "fit_predict_seconds", elapsed,
                 ),
             ]
+            error_rows = [
+                build_result_row(
+                    experiment_id, dataset, model_label, task, fold,
+                    "exposure_weighted_rmse_rate", fold_rmse_rate,
+                ),
+            ]
             append_results(rows)
+            append_results(error_rows, output_path=ERROR_METRICS_PATH)
 
 
 def run_dataset(dataset: str, cfg: dict) -> None:
