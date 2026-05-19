@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Project data / outputs (regenerated from R via rpy2)
+data/
+logs/
+res/
