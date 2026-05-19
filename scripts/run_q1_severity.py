@@ -1,8 +1,14 @@
 """Q1 — Severity benchmark.
 
 Runs 5-fold CV for GLM, XGBoost, and TabPFN on French and Belgian MTPL
-severity data.  Records per-fold and pooled Gamma deviance in res/results.csv
-and prints the Table 1 summary to the log.
+severity data.  Records per-fold and pooled Gamma deviance in
+``res/results_severity.csv`` and RMSE / MAE / Pearson / Spearman in
+``res/results_error_severity.csv``, then prints the Table 1 summary to the log.
+
+The two correlations are stored alongside RMSE/MAE because they probe a
+different failure mode: a severity model can be poorly calibrated on the
+absolute scale (large RMSE / deviance) yet still rank observations correctly,
+which the correlations expose.
 
 Usage:
     python scripts/run_q1_severity.py
@@ -10,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import gc
 import sys
 import time
 import logging
@@ -17,6 +24,25 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+import os
+os.environ["TABPFN_ALLOW_CPU_LARGE_DATASET"] = "1"
+
+try:
+    import torch
+except ImportError:  # CPU-only environments without torch
+    torch = None
+
+
+def _release_gpu() -> None:
+    """Drop Python garbage and return CUDA buffers to the caching allocator.
+
+    Called between folds and between datasets to prevent fragmentation-driven
+    OOM on long sweeps. Safe no-op when torch or CUDA is absent.
+    """
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # ── Project root on sys.path ──────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -30,11 +56,19 @@ from src.data.preprocessing import encode_features, get_raw_features, get_target
 from src.methods.glm_model import make_glm
 from src.methods.xgboost_model import make_xgboost
 from src.methods.tabpfn_model import make_tabpfn
-from src.utils.metrics import gamma_deviance, mae, pooled_gamma_deviance, rmse
+from src.utils.metrics import (
+    gamma_deviance,
+    mae,
+    pearson_corr,
+    pooled_gamma_deviance,
+    rmse,
+    spearman_corr,
+)
 from src.utils.results import append_results, build_result_row
 
 CFG_PATH = PROJECT_ROOT / "config" / "experiment_q1_severity.yaml"
-ERROR_METRICS_PATH = PROJECT_ROOT / "res" / "results_error_metrics.csv"
+RESULTS_PATH = PROJECT_ROOT / "res" / "results_severity.csv"
+ERROR_METRICS_PATH = PROJECT_ROOT / "res" / "results_error_severity.csv"
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +112,7 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         all_w: list[np.ndarray] = []
         result_rows: list[dict] = []
         error_rows: list[dict] = []
+        error_rows: list[dict] = []
 
         for fold in range(n_folds):
             train_df, test_df = get_fold(df, splits, fold)
@@ -115,14 +150,18 @@ def run_dataset(dataset: str, cfg: dict) -> None:
             dev = gamma_deviance(y_test, mu_test, sample_weight=w_test)
             fold_rmse = rmse(y_test, mu_test)
             fold_mae = mae(y_test, mu_test)
+            fold_pearson = pearson_corr(y_test, mu_test, sample_weight=w_test)
+            fold_spearman = spearman_corr(y_test, mu_test)
             fold_deviances.append(dev)
             all_y.append(y_test)
             all_mu.append(mu_test)
             all_w.append(w_test)
 
             logger.info(
-                "  Fold %d: gamma_deviance=%.6f  rmse=%.6f  mae=%.6f  time=%.1fs",
-                fold, dev, fold_rmse, fold_mae, elapsed,
+                "  Fold %d: gamma_deviance=%.6f  rmse=%.6f  mae=%.6f  "
+                "pearson=%.4f  spearman=%.4f  time=%.1fs",
+                fold, dev, fold_rmse, fold_mae,
+                fold_pearson, fold_spearman, elapsed,
             )
 
             result_rows.append(build_result_row(
@@ -141,23 +180,58 @@ def run_dataset(dataset: str, cfg: dict) -> None:
                 experiment_id, dataset, model_name, task, fold,
                 "mae", fold_mae,
             ))
+            error_rows.append(build_result_row(
+                experiment_id, dataset, model_name, task, fold,
+                "pearson_corr", fold_pearson,
+            ))
+            error_rows.append(build_result_row(
+                experiment_id, dataset, model_name, task, fold,
+                "spearman_corr", fold_spearman,
+            ))
 
-        # Pooled OOF score
+            # Release the fitted model and fold-scoped arrays before the next
+            # fold loads. Critical for TabPFN on GPU — the CUDA caching
+            # allocator otherwise fragments across folds and can segfault.
+            del model, train_df, test_df, X_train, X_test, mu_test
+            del y_train, w_train, log_exp_train, log_exp_test
+            _release_gpu()
+
+        # Pooled OOF scores
         pooled = pooled_gamma_deviance(all_y, all_mu, all_w)
         result_rows.append(build_result_row(
             experiment_id, dataset, model_name, task, "pooled",
             "gamma_deviance", pooled,
         ))
 
+        y_pool = np.concatenate(all_y)
+        mu_pool = np.concatenate(all_mu)
+        w_pool = np.concatenate(all_w)
+        pooled_pearson = pearson_corr(y_pool, mu_pool, sample_weight=w_pool)
+        pooled_spearman = spearman_corr(y_pool, mu_pool)
+        error_rows.append(build_result_row(
+            experiment_id, dataset, model_name, task, "pooled",
+            "pearson_corr", pooled_pearson,
+        ))
+        error_rows.append(build_result_row(
+            experiment_id, dataset, model_name, task, "pooled",
+            "spearman_corr", pooled_spearman,
+        ))
+
         mean_dev = float(np.mean(fold_deviances))
         std_dev = float(np.std(fold_deviances, ddof=1))
         logger.info(
-            "  %s | %s | %s : mean=%.6f  std=%.6f  pooled=%.6f",
+            "  %s | %s | %s : mean=%.6f  std=%.6f  pooled=%.6f  "
+            "pooled_pearson=%.4f  pooled_spearman=%.4f",
             dataset, model_name, task, mean_dev, std_dev, pooled,
+            pooled_pearson, pooled_spearman,
         )
 
-        append_results(result_rows)
+        append_results(result_rows, output_path=RESULTS_PATH)
         append_results(error_rows, output_path=ERROR_METRICS_PATH)
+
+    # End-of-dataset cleanup before the next dataset loads.
+    del df, splits, feat_cfg
+    _release_gpu()
 
 
 def main() -> None:
@@ -170,8 +244,12 @@ def main() -> None:
 
     for dataset in cfg["datasets"]:
         run_dataset(dataset, cfg)
+        _release_gpu()
 
-    logger.info("Q1 complete — results appended to res/results.csv")
+    logger.info(
+        "Q1 complete — deviances appended to %s, error metrics to %s",
+        RESULTS_PATH, ERROR_METRICS_PATH,
+    )
 
 
 if __name__ == "__main__":

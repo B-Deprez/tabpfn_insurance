@@ -7,12 +7,17 @@ Subsampling is nested: the script draws max(subsample_sizes) training rows
 per fold (seed = cv_seed + fold) and reuses the first N rows for each
 smaller size (2k ⊂ 5k ⊂ 10k), keeping the comparison fair.
 
+Per-fold and pooled Poisson deviance are written to
+``res/results_frequency.csv``; the exposure-weighted RMSE-on-rate metric is
+written to ``res/results_error_frequency.csv``.
+
 Usage:
     python scripts/run_q2_frequency.py
 """
 
 from __future__ import annotations
 
+import gc
 import sys
 import time
 import logging
@@ -20,6 +25,22 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+try:
+    import torch
+except ImportError:  # CPU-only environments without torch
+    torch = None
+
+
+def _release_gpu() -> None:
+    """Drop Python garbage and return CUDA buffers to the caching allocator.
+
+    Called between TabPFN fits to prevent fragmentation-driven OOM on long
+    multi-fold / multi-size sweeps. Safe no-op when torch or CUDA is absent.
+    """
+    gc.collect()
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 # ── Project root on sys.path ──────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,10 +59,16 @@ from src.utils.metrics import (
     poisson_deviance,
     pooled_poisson_deviance,
 )
+from src.utils.metrics import (
+    exposure_weighted_rmse_rate,
+    poisson_deviance,
+    pooled_poisson_deviance,
+)
 from src.utils.results import append_results, build_result_row
 
 CFG_PATH = PROJECT_ROOT / "config" / "experiment_q2_frequency.yaml"
-ERROR_METRICS_PATH = PROJECT_ROOT / "res" / "results_error_metrics.csv"
+RESULTS_PATH = PROJECT_ROOT / "res" / "results_frequency.csv"
+ERROR_METRICS_PATH = PROJECT_ROOT / "res" / "results_error_frequency.csv"
 logger = logging.getLogger(__name__)
 
 
@@ -72,6 +99,7 @@ def run_baselines(
         all_e: list[np.ndarray] = []
         result_rows: list[dict] = []
         error_rows: list[dict] = []
+        error_rows: list[dict] = []
 
         for fold in range(n_folds):
             train_df, test_df = get_fold(df, splits, fold)
@@ -90,11 +118,17 @@ def run_baselines(
             dev = poisson_deviance(y_test, mu_test, w_test, sample_weight=w_test)
             y_rate_test = y_test / np.maximum(w_test, 1e-10)
             fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
+            y_rate_test = y_test / np.maximum(w_test, 1e-10)
+            fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
             fold_deviances.append(dev)
             all_y.append(y_test)
             all_mu.append(mu_test)
             all_e.append(w_test)
 
+            logger.info(
+                "  Fold %d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
+                fold, dev, fold_rmse_rate, elapsed,
+            )
             logger.info(
                 "  Fold %d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
                 fold, dev, fold_rmse_rate, elapsed,
@@ -113,6 +147,9 @@ def run_baselines(
                 "exposure_weighted_rmse_rate", fold_rmse_rate,
             ))
 
+            del model, train_df, test_df, X_train, X_test, mu_test
+            del y_train, w_train, log_exp_train, log_exp_test, y_rate_test
+
         pooled = pooled_poisson_deviance(all_y, all_mu, all_e, all_e)
         result_rows.append(build_result_row(
             experiment_id, dataset, model_name, task, "pooled",
@@ -126,7 +163,7 @@ def run_baselines(
             float(np.std(fold_deviances, ddof=1)),
             pooled,
         )
-        append_results(result_rows)
+        append_results(result_rows, output_path=RESULTS_PATH)
         append_results(error_rows, output_path=ERROR_METRICS_PATH)
 
 
@@ -147,6 +184,12 @@ def run_tabpfn_subsample(
 
     logger.info("--- TabPFN subsample sweep: sizes=%s ---", subsample_sizes)
 
+    # Hoist these out of the per-size loop so we don't pay the import cost
+    # 5 × n_folds times and so device detection happens once per dataset.
+    from tabpfn import TabPFNRegressor
+    from src.methods.tabpfn_model import _detect_device
+    device = _detect_device()
+
     for fold in range(n_folds):
         train_df, test_df = get_fold(df, splits, fold)
 
@@ -155,9 +198,10 @@ def run_tabpfn_subsample(
         X_test = get_raw_features(test_df, dataset, feat_cfg)
         y_train_full, w_train_full, _ = get_targets(train_df, dataset, task)
         y_test, w_test, _ = get_targets(test_df, dataset, task)
+        del train_df, test_df
 
-        y_arr = y_train_full
-        w_arr = w_train_full
+        # Strategy B: rate response. Compute once per fold; slice for each size.
+        y_rate_full = y_train_full / np.maximum(w_train_full, 1e-10)
 
         # Draw the master subsample (nested: smaller sizes take first N rows)
         fold_seed = cv_seed + fold
@@ -166,20 +210,14 @@ def run_tabpfn_subsample(
         master_size = min(max_size, n_available)
         master_idx = rng.choice(n_available, size=master_size, replace=False)
 
+        y_rate_test = y_test / np.maximum(w_test, 1e-10)
+
         for size in subsample_sizes:
             actual_size = min(size, master_size)
             idx = master_idx[:actual_size]
 
             X_sub = X_train_full.iloc[idx].reset_index(drop=True)
-            y_sub = y_arr[idx]
-            w_sub = w_arr[idx]
-
-            # Strategy B: rate as response
-            y_rate_sub = y_sub / np.maximum(w_sub, 1e-10)
-
-            from tabpfn import TabPFNRegressor
-            from src.methods.tabpfn_model import _detect_device
-            device = _detect_device()
+            y_rate_sub = y_rate_full[idx]
 
             t0 = time.perf_counter()
             model = TabPFNRegressor(device=device)
@@ -188,9 +226,10 @@ def run_tabpfn_subsample(
             elapsed = time.perf_counter() - t0
 
             dev = poisson_deviance(y_test, mu_test, w_test, sample_weight=w_test)
-            y_rate_test = y_test / np.maximum(w_test, 1e-10)
             fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
             logger.info(
+                "  Fold %d | size=%d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
+                fold, actual_size, dev, fold_rmse_rate, elapsed,
                 "  Fold %d | size=%d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
                 fold, actual_size, dev, fold_rmse_rate, elapsed,
             )
@@ -213,8 +252,20 @@ def run_tabpfn_subsample(
                     "exposure_weighted_rmse_rate", fold_rmse_rate,
                 ),
             ]
-            append_results(rows)
+            append_results(rows, output_path=RESULTS_PATH)
             append_results(error_rows, output_path=ERROR_METRICS_PATH)
+
+            # Critical: release the fitted TabPFN and its GPU buffers before
+            # the next size. Without this, the CUDA caching allocator
+            # fragments across the 5 sizes × n_folds fits and eventually
+            # segfaults on a fresh allocation.
+            del model, X_sub, y_rate_sub, mu_test
+            _release_gpu()
+
+        # End-of-fold cleanup before loading the next fold's data.
+        del X_train_full, X_test, y_train_full, w_train_full, y_test, w_test
+        del y_rate_full, y_rate_test, master_idx
+        _release_gpu()
 
 
 def run_dataset(dataset: str, cfg: dict) -> None:
@@ -232,6 +283,9 @@ def run_dataset(dataset: str, cfg: dict) -> None:
     run_baselines(dataset, cfg, df, splits, feat_cfg)
     run_tabpfn_subsample(dataset, cfg, df, splits, feat_cfg)
 
+    del df, splits, feat_cfg
+    _release_gpu()
+
 
 def main() -> None:
     with open(CFG_PATH) as f:
@@ -242,8 +296,12 @@ def main() -> None:
 
     for dataset in cfg["datasets"]:
         run_dataset(dataset, cfg)
+        _release_gpu()
 
-    logger.info("Q2 complete — results appended to res/results.csv")
+    logger.info(
+        "Q2 complete — deviances appended to %s, error metrics to %s",
+        RESULTS_PATH, ERROR_METRICS_PATH,
+    )
 
 
 if __name__ == "__main__":

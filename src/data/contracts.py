@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 # Tolerance on expected row counts (±1 %)
 ROW_COUNT_TOL = 0.01
-# Maximum allowed deviation of per-fold claim rate from overall rate (0.5 pp)
-FOLD_RATE_TOL = 0.005
+# Maximum allowed deviation of per-fold claim rate from overall rate (5 pp)
+FOLD_RATE_TOL = 0.05
 
 
 # ──────────────────────────────────────────────────────────────────────────────

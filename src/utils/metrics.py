@@ -9,6 +9,12 @@ Secondary error-based metrics:
     rmse, mae                    — severity (unweighted by default)
     exposure_weighted_rmse_rate  — frequency (rate scale, exposure weights)
 
+Calibration-style metrics (severity only):
+    pearson_corr   — linear correlation between predictions and actuals
+    spearman_corr  — rank correlation between predictions and actuals
+
+Both deviance functions are computed at the observation level and then averaged
+(optionally weighted).  Use ``pooled_*`` variants for the aggregate OOF score.
 Both deviance functions are computed at the observation level and then averaged
 (optionally weighted).  Use ``pooled_*`` variants for the aggregate OOF score.
 """
@@ -18,11 +24,12 @@ from __future__ import annotations
 import logging
 
 import numpy as np
-from sklearn.metrics import (
-    mean_absolute_error,
-    roc_auc_score,
-    root_mean_squared_error,
-)
+
+# sklearn is intentionally NOT imported at module level. Loading sklearn before
+# torch (TabPFN) can cause an OpenMP runtime collision on Linux GPU nodes
+# (libgomp from sklearn vs libiomp5 from torch), which manifests as a hard
+# segfault on the VSC. AUC is the only sklearn metric still in use; it is
+# lazy-imported inside ``auc_roc`` so the q1/q2 scripts never trigger it.
 
 logger = logging.getLogger(__name__)
 
@@ -157,13 +164,13 @@ def rmse(
     Returns:
         Scalar RMSE.
     """
-    return float(
-        root_mean_squared_error(
-            np.asarray(y_true, dtype=float),
-            np.asarray(y_pred, dtype=float),
-            sample_weight=sample_weight,
-        )
-    )
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    sq = (y - p) ** 2
+    if sample_weight is None:
+        return float(np.sqrt(np.mean(sq)))
+    w = np.asarray(sample_weight, dtype=float)
+    return float(np.sqrt(np.average(sq, weights=w)))
 
 
 def mae(
@@ -181,13 +188,81 @@ def mae(
     Returns:
         Scalar MAE.
     """
-    return float(
-        mean_absolute_error(
-            np.asarray(y_true, dtype=float),
-            np.asarray(y_pred, dtype=float),
-            sample_weight=sample_weight,
-        )
-    )
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    ae = np.abs(y - p)
+    if sample_weight is None:
+        return float(np.mean(ae))
+    w = np.asarray(sample_weight, dtype=float)
+    return float(np.average(ae, weights=w))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Correlation between predictions and actuals  (severity — calibration check)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def pearson_corr(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    sample_weight: np.ndarray | None = None,
+) -> float:
+    """(Weighted) Pearson correlation between predictions and actuals.
+
+    A model that ranks risks well but is mis-scaled (a typical calibration
+    failure) will still produce a high Pearson correlation, so this metric
+    complements deviance/RMSE rather than replacing them.
+
+    Args:
+        y_true: observed values.
+        y_pred: predicted values.
+        sample_weight: optional observation weights (e.g. ClaimNb for sev).
+
+    Returns:
+        Scalar Pearson correlation in [-1, 1].  Returns ``nan`` if either
+        input has zero variance under the supplied weights.
+    """
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    if sample_weight is None:
+        w = np.ones_like(y)
+    else:
+        w = np.asarray(sample_weight, dtype=float)
+
+    w_sum = w.sum()
+    if w_sum <= 0:
+        return float("nan")
+
+    y_mean = np.sum(w * y) / w_sum
+    p_mean = np.sum(w * p) / w_sum
+    cov = np.sum(w * (y - y_mean) * (p - p_mean)) / w_sum
+    var_y = np.sum(w * (y - y_mean) ** 2) / w_sum
+    var_p = np.sum(w * (p - p_mean) ** 2) / w_sum
+    denom = np.sqrt(var_y * var_p)
+    if denom <= 0:
+        return float("nan")
+    return float(cov / denom)
+
+
+def spearman_corr(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> float:
+    """Spearman rank correlation between predictions and actuals.
+
+    Measures monotonic agreement — invariant to any monotone re-scaling of
+    the predictions. Useful for diagnosing whether a regressor that is
+    mis-calibrated on the original scale still ranks observations correctly.
+    No weighting (weighted Spearman is non-standard); pass through any
+    sample_weight argument explicitly via duplication if needed.
+
+    Returns:
+        Scalar Spearman correlation in [-1, 1].
+    """
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    from scipy.stats import spearmanr  # lazy: only used by severity script
+    rho, _ = spearmanr(y, p)
+    return float(rho)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -229,6 +304,7 @@ def auc_roc(y_true: np.ndarray, y_score: np.ndarray) -> float:
     Returns:
         Scalar AUC-ROC value in [0, 1].
     """
+    from sklearn.metrics import roc_auc_score  # lazy: only used by q4
     return float(roc_auc_score(np.asarray(y_true, dtype=int), np.asarray(y_score, dtype=float)))
 
 
