@@ -112,7 +112,6 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         all_w: list[np.ndarray] = []
         result_rows: list[dict] = []
         error_rows: list[dict] = []
-        error_rows: list[dict] = []
 
         for fold in range(n_folds):
             train_df, test_df = get_fold(df, splits, fold)

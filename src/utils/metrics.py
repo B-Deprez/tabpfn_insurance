@@ -15,8 +15,6 @@ Calibration-style metrics (severity only):
 
 Both deviance functions are computed at the observation level and then averaged
 (optionally weighted).  Use ``pooled_*`` variants for the aggregate OOF score.
-Both deviance functions are computed at the observation level and then averaged
-(optionally weighted).  Use ``pooled_*`` variants for the aggregate OOF score.
 """
 
 from __future__ import annotations
