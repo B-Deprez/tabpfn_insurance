@@ -1,8 +1,11 @@
 """TabPFN wrappers for insurance pricing (frequency, severity, and binary classification).
 
-TabPFN-2.6 handles mixed data types (strings, integers, floats) and missing
+TabPFN handles mixed data types (strings, integers, floats) and missing
 values natively — no feature encoding is required.  Raw feature columns from
 ``get_raw_features()`` are passed directly to the model.
+
+The internal ``ModelVersion`` (``v2_6`` or ``v3``) is selected per call via
+``create_default_for_version``.  The default is ``v3``.
 
 Exposure strategy B is used throughout:
     Frequency  : response = ClaimNb / Exposure (annualised rate)
@@ -25,6 +28,38 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Mapping of public string labels → tabpfn.constants.ModelVersion enum members.
+# Resolved lazily inside helpers so importing this module does not require tabpfn.
+_VERSION_LABELS = ("v2_6", "v3")
+
+
+def _resolve_model_version(version: str):
+    """Translate ``"v2_6"`` / ``"v3"`` to the corresponding ``ModelVersion`` enum."""
+    from tabpfn.constants import ModelVersion
+    if version == "v2_6":
+        return ModelVersion.V2_6
+    if version == "v3":
+        return ModelVersion.V3
+    raise ValueError(
+        f"Unknown tabpfn_version {version!r}; expected one of {_VERSION_LABELS}"
+    )
+
+
+def _make_regressor(version: str, device: str):
+    """Build a ``TabPFNRegressor`` for the requested internal model version."""
+    from tabpfn import TabPFNRegressor
+    return TabPFNRegressor.create_default_for_version(
+        _resolve_model_version(version), device=device,
+    )
+
+
+def _make_classifier(version: str, device: str):
+    """Build a ``TabPFNClassifier`` for the requested internal model version."""
+    from tabpfn import TabPFNClassifier
+    return TabPFNClassifier.create_default_for_version(
+        _resolve_model_version(version), device=device,
+    )
 
 
 def _detect_device() -> str:
@@ -56,18 +91,26 @@ def _subsample(
 
 
 class TabPFNFreq:
-    """TabPFN-2.6 regressor for frequency modelling (Strategy B).
+    """TabPFN regressor for frequency modelling (Strategy B).
 
     Raw unencoded features are passed directly to TabPFN.
     Response = ClaimNb / Exposure (annualised rate).
     """
 
-    def __init__(self, max_train_size: int = 100_000) -> None:
+    def __init__(
+        self,
+        max_train_size: int = 100_000,
+        tabpfn_version: str = "v3",
+    ) -> None:
         self.max_train_size = max_train_size
+        self.tabpfn_version = tabpfn_version
         self._model = None
         self._feature_names: list[str] = []
         self._device = _detect_device()
-        logger.info("TabPFNFreq: device=%s, max_train_size=%d", self._device, max_train_size)
+        logger.info(
+            "TabPFNFreq: device=%s, max_train_size=%d, version=%s",
+            self._device, max_train_size, tabpfn_version,
+        )
 
     def fit(
         self,
@@ -86,8 +129,6 @@ class TabPFNFreq:
             log_exposure: unused; accepted for interface parity with GLM/XGBoost.
             fold_seed: RNG seed for the subsample draw.
         """
-        from tabpfn import TabPFNRegressor
-
         self._feature_names = list(X_train.columns)
         exposure = sample_weight if sample_weight is not None else np.ones(len(y_train))
 
@@ -101,7 +142,7 @@ class TabPFNFreq:
                 len(X_train), len(X_sub), fold_seed,
             )
 
-        self._model = TabPFNRegressor(device=self._device)
+        self._model = _make_regressor(self.tabpfn_version, self._device)
         self._model.fit(X_sub, y_sub)
         logger.info("TabPFNFreq fitted on %d rows", len(X_sub))
         return self
@@ -122,18 +163,26 @@ class TabPFNFreq:
 
 
 class TabPFNSev:
-    """TabPFN-2.6 regressor for severity modelling (Strategy B + log-transform).
+    """TabPFN regressor for severity modelling (Strategy B + log-transform).
 
     Raw unencoded features are passed directly to TabPFN.
     Response = log(AvgSeverity); predictions are inverted with exp().
     """
 
-    def __init__(self, max_train_size: int = 100_000) -> None:
+    def __init__(
+        self,
+        max_train_size: int = 100_000,
+        tabpfn_version: str = "v3",
+    ) -> None:
         self.max_train_size = max_train_size
+        self.tabpfn_version = tabpfn_version
         self._model = None
         self._feature_names: list[str] = []
         self._device = _detect_device()
-        logger.info("TabPFNSev: device=%s, max_train_size=%d", self._device, max_train_size)
+        logger.info(
+            "TabPFNSev: device=%s, max_train_size=%d, version=%s",
+            self._device, max_train_size, tabpfn_version,
+        )
 
     def fit(
         self,
@@ -153,8 +202,6 @@ class TabPFNSev:
             log_exposure: unused for severity; accepted for interface parity.
             fold_seed: RNG seed for the subsample draw.
         """
-        from tabpfn import TabPFNRegressor
-
         self._feature_names = list(X_train.columns)
 
         # Log-transform response (CLAUDE.md §Feature Encoding)
@@ -167,7 +214,7 @@ class TabPFNSev:
                 len(X_train), len(X_sub), fold_seed,
             )
 
-        self._model = TabPFNRegressor(device=self._device)
+        self._model = _make_regressor(self.tabpfn_version, self._device)
         self._model.fit(X_sub, y_sub)
         logger.info("TabPFNSev fitted on %d rows", len(X_sub))
         return self
@@ -200,18 +247,26 @@ class TabPFNSev:
 
 
 class TabPFNClf:
-    """TabPFN-2.6 classifier for binary classification tasks.
+    """TabPFN classifier for binary classification tasks.
 
     Raw unencoded features are passed directly to TabPFN.
     ``predict()`` returns the probability of class 1 (claim).
     """
 
-    def __init__(self, max_train_size: int = 100_000) -> None:
+    def __init__(
+        self,
+        max_train_size: int = 100_000,
+        tabpfn_version: str = "v3",
+    ) -> None:
         self.max_train_size = max_train_size
+        self.tabpfn_version = tabpfn_version
         self._model = None
         self._feature_names: list[str] = []
         self._device = _detect_device()
-        logger.info("TabPFNClf: device=%s, max_train_size=%d", self._device, max_train_size)
+        logger.info(
+            "TabPFNClf: device=%s, max_train_size=%d, version=%s",
+            self._device, max_train_size, tabpfn_version,
+        )
 
     def fit(
         self,
@@ -230,8 +285,6 @@ class TabPFNClf:
             log_exposure: accepted for interface parity; not used.
             fold_seed: RNG seed for the subsample draw.
         """
-        from tabpfn import TabPFNClassifier
-
         self._feature_names = list(X_train.columns)
         y_int = y_train.astype(int)
 
@@ -242,7 +295,7 @@ class TabPFNClf:
                 len(X_train), len(X_sub), fold_seed,
             )
 
-        self._model = TabPFNClassifier(device=self._device)
+        self._model = _make_classifier(self.tabpfn_version, self._device)
         self._model.fit(X_sub, y_sub)
         logger.info("TabPFNClf fitted on %d rows", len(X_sub))
         return self
@@ -282,18 +335,25 @@ class TabPFNFreqWithShap(TabPFNFreq):
 # Factory
 # ──────────────────────────────────────────────────────────────────────────────
 
-def make_tabpfn(task: str, max_train_size: int = 100_000, shap: bool = False):
-    """Return the appropriate TabPFN-2.6 wrapper for the given task.
+def make_tabpfn(
+    task: str,
+    max_train_size: int = 100_000,
+    shap: bool = False,
+    tabpfn_version: str = "v3",
+):
+    """Return the appropriate TabPFN wrapper for the given task.
 
     Args:
         task: ``"freq"``, ``"sev"``, or ``"clf"``.
-        max_train_size: maximum training rows (TabPFN-2.6 ceiling = 100,000).
+        max_train_size: maximum training rows.
         shap: if True, return a SHAP-capable variant for Q3 (freq/sev only).
+        tabpfn_version: internal ``ModelVersion`` to use — ``"v2_6"`` or ``"v3"``.
     """
     if task == "freq":
-        return TabPFNFreqWithShap(max_train_size) if shap else TabPFNFreq(max_train_size)
+        cls = TabPFNFreqWithShap if shap else TabPFNFreq
+        return cls(max_train_size, tabpfn_version=tabpfn_version)
     if task == "sev":
-        return TabPFNSev(max_train_size)
+        return TabPFNSev(max_train_size, tabpfn_version=tabpfn_version)
     if task == "clf":
-        return TabPFNClf(max_train_size)
+        return TabPFNClf(max_train_size, tabpfn_version=tabpfn_version)
     raise ValueError(f"Unknown task '{task}'")

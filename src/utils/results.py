@@ -18,6 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_PATH = PROJECT_ROOT / "res" / "results.csv"
 
 # Canonical column order — every appended row must contain these fields.
+# ``tabpfn_version`` records which internal TabPFN ModelVersion produced the
+# row (``"v2_6"`` or ``"v3"``); it is blank for non-TabPFN models.
 RESULT_COLUMNS = [
     "timestamp",
     "experiment_id",
@@ -27,6 +29,7 @@ RESULT_COLUMNS = [
     "fold",
     "metric",
     "value",
+    "tabpfn_version",
 ]
 
 
@@ -54,15 +57,24 @@ def append_results(rows: list[dict], output_path: Path | None = None) -> None:
 
     path = output_path if output_path is not None else RESULTS_PATH
 
-    # Validate and fill timestamp
+    # Validate and fill defaults.
+    # ``tabpfn_version`` is auto-filled with "" so non-TabPFN appends do not
+    # need to thread it through every call site.
+    _optional_defaults = {"tabpfn_version": ""}
     enriched = []
     for row in rows:
-        missing = [c for c in RESULT_COLUMNS if c not in row and c != "timestamp"]
+        missing = [
+            c for c in RESULT_COLUMNS
+            if c not in row and c != "timestamp" and c not in _optional_defaults
+        ]
         if missing:
             raise ValueError(f"Result row missing required columns: {missing}. Row: {row}")
         enriched.append({
             "timestamp": row.get("timestamp", _now_iso()),
-            **{c: row[c] for c in RESULT_COLUMNS if c != "timestamp"},
+            **{
+                c: row.get(c, _optional_defaults.get(c))
+                for c in RESULT_COLUMNS if c != "timestamp"
+            },
         })
 
     df_new = pd.DataFrame(enriched, columns=RESULT_COLUMNS)
@@ -82,11 +94,14 @@ def build_result_row(
     fold: int | str,
     metric: str,
     value: float,
+    tabpfn_version: str = "",
 ) -> dict:
     """Construct a single result dict with all required fields.
 
     Args:
         fold: integer fold index, or the string ``"pooled"`` for the OOF score.
+        tabpfn_version: internal TabPFN ModelVersion (``"v2_6"`` / ``"v3"``);
+            leave blank for non-TabPFN models.
     """
     return {
         "timestamp": _now_iso(),
@@ -97,4 +112,5 @@ def build_result_row(
         "fold": fold,
         "metric": metric,
         "value": float(value),
+        "tabpfn_version": tabpfn_version,
     }

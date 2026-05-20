@@ -13,3 +13,7 @@ cv_folds: 5
 
 tabpfn:
   max_train_size: 10000   # all 1,177 rows fit; ceiling retained for consistency
+  # Internal ModelVersions to dispatch through create_default_for_version.
+  # Each version is run as a separate fit/predict pass per fold.
+  # Accepted values: "v2_6", "v3".
+  tabpfn_versions: ["v2_6", "v3"]

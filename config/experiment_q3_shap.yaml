@@ -38,3 +38,7 @@ models:
 
 tabpfn:
   max_train_size: 100000
+  # Internal ModelVersions to dispatch through create_default_for_version.
+  # SHAP arrays are saved per version under res/shap/ with a version suffix
+  # (e.g. ..._fold0_tabpfn_v3.npy).  Accepted values: "v2_6", "v3".
+  tabpfn_versions: ["v2_6", "v3"]

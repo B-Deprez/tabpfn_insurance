@@ -1,4 +1,4 @@
-name: tabpfn-insurance_v3
+name: tabpfn-insurance
 
 channels:
   - conda-forge
@@ -52,4 +52,6 @@ dependencies:
   #       tabpfn depends on torch and must be installed after it (Step 3).
   - pip
   - pip:
-    - tabpfn>=0.1.10
+    # Internal model version "v3" requires tabpfn>=8.0 (exposes
+    # ModelVersion.V3); the older default was the v2.6 architecture.
+    - tabpfn>=8.0

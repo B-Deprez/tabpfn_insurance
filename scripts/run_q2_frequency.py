@@ -53,7 +53,7 @@ from src.data.cv import make_cv_splits, get_fold
 from src.data.preprocessing import encode_features, get_raw_features, get_targets
 from src.methods.glm_model import make_glm
 from src.methods.xgboost_model import make_xgboost
-from src.methods.tabpfn_model import TabPFNFreq
+from src.methods.tabpfn_model import TabPFNFreq, _make_regressor
 from src.utils.metrics import (
     exposure_weighted_rmse_rate,
     poisson_deviance,
@@ -167,14 +167,32 @@ def run_tabpfn_subsample(
     experiment_id = cfg["experiment_id"]
     n_folds = cfg["cv_folds"]
     cv_seed = cfg["cv_seed"]
-    subsample_sizes: list[int] = sorted(cfg["tabpfn"]["subsample_sizes"])
-    max_size = subsample_sizes[-1]
+    # Parse subsample_sizes: integers feed the nested-subsample sweep, while
+    # the "full" sentinel triggers an additional pass on the entire training
+    # fold (no subsampling).  Putting "full" last keeps memory growth monotonic.
+    subsample_sizes_raw = cfg["tabpfn"]["subsample_sizes"]
+    numeric_sizes: list[int] = sorted(
+        s for s in subsample_sizes_raw if isinstance(s, int)
+    )
+    include_full: bool = "full" in subsample_sizes_raw
+    sizes_to_run: list[int | str] = [*numeric_sizes]
+    if include_full:
+        sizes_to_run.append("full")
 
-    logger.info("--- TabPFN subsample sweep: sizes=%s ---", subsample_sizes)
+    # Accept either a list or a single string for backward compat.
+    tabpfn_versions: list[str] = cfg["tabpfn"].get(
+        "tabpfn_versions",
+        [cfg["tabpfn"].get("tabpfn_version", "v3")],
+    )
+    max_size = numeric_sizes[-1] if numeric_sizes else 0
 
-    # Hoist these out of the per-size loop so we don't pay the import cost
-    # 5 × n_folds times and so device detection happens once per dataset.
-    from tabpfn import TabPFNRegressor
+    logger.info(
+        "--- TabPFN subsample sweep: sizes=%s, versions=%s ---",
+        sizes_to_run, tabpfn_versions,
+    )
+
+    # Hoist device detection out of the per-size loop. The regressor is built
+    # via the shared factory so the v2_6/v3 dispatch matches the other scripts.
     from src.methods.tabpfn_model import _detect_device
     device = _detect_device()
 
@@ -191,62 +209,80 @@ def run_tabpfn_subsample(
         # Strategy B: rate response. Compute once per fold; slice for each size.
         y_rate_full = y_train_full / np.maximum(w_train_full, 1e-10)
 
-        # Draw the master subsample (nested: smaller sizes take first N rows)
+        # Draw the master subsample (nested: smaller sizes take first N rows).
+        # When "full" is requested we permute the entire fold so that the
+        # smaller subsamples remain strict subsets of the full pass.
         fold_seed = cv_seed + fold
         rng = np.random.default_rng(fold_seed)
         n_available = len(X_train_full)
-        master_size = min(max_size, n_available)
+        master_size = n_available if include_full else min(max_size, n_available)
         master_idx = rng.choice(n_available, size=master_size, replace=False)
 
         y_rate_test = y_test / np.maximum(w_test, 1e-10)
 
-        for size in subsample_sizes:
-            actual_size = min(size, master_size)
-            idx = master_idx[:actual_size]
+        for size in sizes_to_run:
+            if size == "full":
+                actual_size = n_available
+                model_label = "tabpfn_full"
+                X_sub = X_train_full
+                y_rate_sub = y_rate_full
+            else:
+                actual_size = min(size, master_size)
+                model_label = f"tabpfn_{actual_size}"
+                idx = master_idx[:actual_size]
+                X_sub = X_train_full.iloc[idx].reset_index(drop=True)
+                y_rate_sub = y_rate_full[idx]
 
-            X_sub = X_train_full.iloc[idx].reset_index(drop=True)
-            y_rate_sub = y_rate_full[idx]
+            # Both versions fit the same subsample, so per-version timing
+            # and deviance can be compared directly.
+            for current_version in tabpfn_versions:
+                t0 = time.perf_counter()
+                model = _make_regressor(current_version, device)
+                model.fit(X_sub, y_rate_sub)
+                mu_test = model.predict(X_test)
+                elapsed = time.perf_counter() - t0
 
-            t0 = time.perf_counter()
-            model = TabPFNRegressor(device=device)
-            model.fit(X_sub, y_rate_sub)
-            mu_test = model.predict(X_test)
-            elapsed = time.perf_counter() - t0
+                dev = poisson_deviance(y_test, mu_test, w_test, sample_weight=w_test)
+                fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
+                size_label = "full" if size == "full" else str(actual_size)
+                logger.info(
+                    "  Fold %d | size=%s (n=%d) | %s: poisson_deviance=%.6f  "
+                    "exposure_weighted_rmse_rate=%.6f  time=%.1fs",
+                    fold, size_label, actual_size, current_version,
+                    dev, fold_rmse_rate, elapsed,
+                )
 
-            dev = poisson_deviance(y_test, mu_test, w_test, sample_weight=w_test)
-            fold_rmse_rate = exposure_weighted_rmse_rate(y_rate_test, mu_test, w_test)
-            logger.info(
-                "  Fold %d | size=%d: poisson_deviance=%.6f  exposure_weighted_rmse_rate=%.6f  time=%.1fs",
-                fold, actual_size, dev, fold_rmse_rate, elapsed,
-            )
+                # Model label encodes the size (or "full"); the per-version
+                # axis lives in the ``tabpfn_version`` column.
+                rows = [
+                    build_result_row(
+                        experiment_id, dataset, model_label, task, fold,
+                        "poisson_deviance", dev, tabpfn_version=current_version,
+                    ),
+                    build_result_row(
+                        experiment_id, dataset, model_label, task, fold,
+                        "fit_predict_seconds", elapsed,
+                        tabpfn_version=current_version,
+                    ),
+                ]
+                error_rows = [
+                    build_result_row(
+                        experiment_id, dataset, model_label, task, fold,
+                        "exposure_weighted_rmse_rate", fold_rmse_rate,
+                        tabpfn_version=current_version,
+                    ),
+                ]
+                append_results(rows, output_path=RESULTS_PATH)
+                append_results(error_rows, output_path=ERROR_METRICS_PATH)
 
-            # Store model name as "tabpfn_<size>" for plot differentiation
-            model_label = f"tabpfn_{actual_size}"
-            rows = [
-                build_result_row(
-                    experiment_id, dataset, model_label, task, fold,
-                    "poisson_deviance", dev,
-                ),
-                build_result_row(
-                    experiment_id, dataset, model_label, task, fold,
-                    "fit_predict_seconds", elapsed,
-                ),
-            ]
-            error_rows = [
-                build_result_row(
-                    experiment_id, dataset, model_label, task, fold,
-                    "exposure_weighted_rmse_rate", fold_rmse_rate,
-                ),
-            ]
-            append_results(rows, output_path=RESULTS_PATH)
-            append_results(error_rows, output_path=ERROR_METRICS_PATH)
+                # Critical: release the fitted TabPFN and its GPU buffers
+                # before the next (size, version) iteration. Without this,
+                # the CUDA caching allocator fragments across the
+                # sizes × versions × n_folds fits and eventually segfaults.
+                del model, mu_test
+                _release_gpu()
 
-            # Critical: release the fitted TabPFN and its GPU buffers before
-            # the next size. Without this, the CUDA caching allocator
-            # fragments across the 5 sizes × n_folds fits and eventually
-            # segfaults on a fresh allocation.
-            del model, X_sub, y_rate_sub, mu_test
-            _release_gpu()
+            del X_sub, y_rate_sub
 
         # End-of-fold cleanup before loading the next fold's data.
         del X_train_full, X_test, y_train_full, w_train_full, y_test, w_test

@@ -105,6 +105,11 @@ def run_combo(dataset: str, task: str, cfg: dict, feat_cfg: dict) -> None:
     experiment_id = cfg["experiment_id"]
     shap_fold: int = cfg["shap_fold"]
     tabpfn_max: int = cfg["tabpfn"]["max_train_size"]
+    # Accept either a list or a single string for backward compat.
+    tabpfn_versions: list[str] = cfg["tabpfn"].get(
+        "tabpfn_versions",
+        [cfg["tabpfn"].get("tabpfn_version", "v3")],
+    )
     cv_seed: int = cfg["cv_seed"]
     fold_seed = cv_seed + shap_fold
 
@@ -172,50 +177,66 @@ def run_combo(dataset: str, task: str, cfg: dict, feat_cfg: dict) -> None:
     ]
 
     # ── TabPFN ────────────────────────────────────────────────────────────────
-    # TabPFN-2.6 receives raw unencoded features directly (no tree encoding)
-    logger.info("  Fitting TabPFN")
+    # Raw unencoded features go directly to TabPFN (no tree encoding).
+    # Each requested version is fitted independently; the SHAP array is saved
+    # under res/shap/ with a version-suffixed filename.
     X_tr_tabpfn = get_raw_features(train_df, dataset, feat_cfg)
     X_te_tabpfn = get_raw_features(test_df, dataset, feat_cfg)
 
-    tabpfn_model = make_tabpfn(task, max_train_size=tabpfn_max, shap=True)
-
-    t0 = time.perf_counter()
-    tabpfn_model.fit(
-        X_tr_tabpfn, y_tr,
-        sample_weight=w_tr,
-        log_exposure=log_exp_tr,
-        fold_seed=fold_seed,
-    )
-    mu_tabpfn = tabpfn_model.predict(X_te_tabpfn, log_exposure=log_exp_te)
-    elapsed_tabpfn = time.perf_counter() - t0
-
-    dev_tabpfn = compute_deviance(task, y_te, mu_tabpfn, w_te)
-    logger.info("  TabPFN deviance=%.6f  time=%.1fs", dev_tabpfn, elapsed_tabpfn)
-
-    shap_tabpfn = _shap_tabpfn(tabpfn_model, X_te_tabpfn)
-    _save_array(shap_tabpfn, dataset, task, "tabpfn")
-
-    # Save raw feature names and test values for beeswarm colour coding
+    # Feature names and X_test values are version-independent; save once.
     np.save(SHAP_DIR / f"{dataset}_{task}_fold0_tabpfn_feature_names.npy",
             np.array(X_te_tabpfn.columns.tolist()))
-    # Numeric representation for colour scale (object columns → codes)
     X_te_numeric = X_te_tabpfn.apply(
         lambda c: c.astype("category").cat.codes if c.dtype == object else c
     )
     np.save(SHAP_DIR / f"{dataset}_{task}_fold0_X_test_tabpfn.npy",
             X_te_numeric.to_numpy(dtype=float))
 
-    result_rows += [
-        build_result_row(experiment_id, dataset, "tabpfn", task, shap_fold,
-                         _metric_name(task), dev_tabpfn),
-        build_result_row(experiment_id, dataset, "tabpfn", task, shap_fold,
-                         "fit_predict_seconds", elapsed_tabpfn),
-    ]
+    tabpfn_devs: dict[str, float] = {}
+    for current_version in tabpfn_versions:
+        logger.info("  Fitting TabPFN (%s)", current_version)
+
+        tabpfn_model = make_tabpfn(
+            task, max_train_size=tabpfn_max, shap=True,
+            tabpfn_version=current_version,
+        )
+
+        t0 = time.perf_counter()
+        tabpfn_model.fit(
+            X_tr_tabpfn, y_tr,
+            sample_weight=w_tr,
+            log_exposure=log_exp_tr,
+            fold_seed=fold_seed,
+        )
+        mu_tabpfn = tabpfn_model.predict(X_te_tabpfn, log_exposure=log_exp_te)
+        elapsed_tabpfn = time.perf_counter() - t0
+
+        dev_tabpfn = compute_deviance(task, y_te, mu_tabpfn, w_te)
+        logger.info(
+            "  TabPFN %s deviance=%.6f  time=%.1fs",
+            current_version, dev_tabpfn, elapsed_tabpfn,
+        )
+
+        shap_tabpfn = _shap_tabpfn(tabpfn_model, X_te_tabpfn)
+        _save_array(shap_tabpfn, dataset, task, f"tabpfn_{current_version}")
+
+        result_rows += [
+            build_result_row(experiment_id, dataset, "tabpfn", task, shap_fold,
+                             _metric_name(task), dev_tabpfn,
+                             tabpfn_version=current_version),
+            build_result_row(experiment_id, dataset, "tabpfn", task, shap_fold,
+                             "fit_predict_seconds", elapsed_tabpfn,
+                             tabpfn_version=current_version),
+        ]
+        tabpfn_devs[current_version] = dev_tabpfn
 
     append_results(result_rows)
+    tabpfn_summary = "  ".join(
+        f"TabPFN({v})={d:.6f}" for v, d in tabpfn_devs.items()
+    )
     logger.info(
-        "  Summary  GLM=%.6f  XGBoost=%.6f  TabPFN=%.6f",
-        dev_glm, dev_xgb, dev_tabpfn,
+        "  Summary  GLM=%.6f  XGBoost=%.6f  %s",
+        dev_glm, dev_xgb, tabpfn_summary,
     )
 
 

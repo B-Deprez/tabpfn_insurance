@@ -81,6 +81,23 @@ def _model_family(model_name: str) -> str:
     return "tabpfn"  # raw unencoded features
 
 
+def _expand_models(models: list[str], tabpfn_versions: list[str]) -> list[tuple[str, str]]:
+    """Flatten ``models`` into (model_name, tabpfn_version) pairs.
+
+    For ``"tabpfn"`` one pair is emitted per entry in ``tabpfn_versions``
+    so each version produces an independent fit + result-row stream.
+    Non-TabPFN models get a single pair with an empty version string.
+    """
+    pairs: list[tuple[str, str]] = []
+    for m in models:
+        if m == "tabpfn":
+            for v in tabpfn_versions:
+                pairs.append((m, v))
+        else:
+            pairs.append((m, ""))
+    return pairs
+
+
 def run_dataset(dataset: str, cfg: dict) -> None:
     """Run all models on one dataset for the severity task."""
     task = cfg["task"]  # "sev"
@@ -88,6 +105,12 @@ def run_dataset(dataset: str, cfg: dict) -> None:
     n_folds = cfg["cv_folds"]
     cv_seed = cfg["cv_seed"]
     tabpfn_max = cfg["tabpfn"]["max_train_size"]
+    # Accept either a list (``tabpfn_versions: [...]``) or a single string
+    # (``tabpfn_version: "v3"``) for backward compat with older configs.
+    tabpfn_versions: list[str] = cfg["tabpfn"].get(
+        "tabpfn_versions",
+        [cfg["tabpfn"].get("tabpfn_version", "v3")],
+    )
 
     logger.info("=" * 70)
     logger.info("Dataset: %s  |  Task: %s", dataset, task)
@@ -102,9 +125,10 @@ def run_dataset(dataset: str, cfg: dict) -> None:
 
     feat_cfg = yaml.safe_load(open(PROJECT_ROOT / "config" / "features.yaml"))
 
-    for model_name in cfg["models"]:
+    for model_name, row_version in _expand_models(cfg["models"], tabpfn_versions):
         family = _model_family(model_name)
-        logger.info("--- Model: %s ---", model_name)
+        descr = f"{model_name} ({row_version})" if row_version else model_name
+        logger.info("--- Model: %s ---", descr)
 
         fold_deviances: list[float] = []
         all_y: list[np.ndarray] = []
@@ -130,7 +154,11 @@ def run_dataset(dataset: str, cfg: dict) -> None:
             elif model_name == "xgboost":
                 model = make_xgboost(task)
             else:
-                model = make_tabpfn(task, max_train_size=tabpfn_max)
+                model = make_tabpfn(
+                    task,
+                    max_train_size=tabpfn_max,
+                    tabpfn_version=row_version,
+                )
 
             # Fit + predict with wall-clock timing
             fold_seed = cv_seed + fold
@@ -165,27 +193,27 @@ def run_dataset(dataset: str, cfg: dict) -> None:
 
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "gamma_deviance", dev,
+                "gamma_deviance", dev, tabpfn_version=row_version,
             ))
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "fit_predict_seconds", elapsed,
+                "fit_predict_seconds", elapsed, tabpfn_version=row_version,
             ))
             error_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "rmse", fold_rmse,
+                "rmse", fold_rmse, tabpfn_version=row_version,
             ))
             error_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "mae", fold_mae,
+                "mae", fold_mae, tabpfn_version=row_version,
             ))
             error_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "pearson_corr", fold_pearson,
+                "pearson_corr", fold_pearson, tabpfn_version=row_version,
             ))
             error_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "spearman_corr", fold_spearman,
+                "spearman_corr", fold_spearman, tabpfn_version=row_version,
             ))
 
             # Release the fitted model and fold-scoped arrays before the next
@@ -199,7 +227,7 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         pooled = pooled_gamma_deviance(all_y, all_mu, all_w)
         result_rows.append(build_result_row(
             experiment_id, dataset, model_name, task, "pooled",
-            "gamma_deviance", pooled,
+            "gamma_deviance", pooled, tabpfn_version=row_version,
         ))
 
         y_pool = np.concatenate(all_y)
@@ -209,11 +237,11 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         pooled_spearman = spearman_corr(y_pool, mu_pool)
         error_rows.append(build_result_row(
             experiment_id, dataset, model_name, task, "pooled",
-            "pearson_corr", pooled_pearson,
+            "pearson_corr", pooled_pearson, tabpfn_version=row_version,
         ))
         error_rows.append(build_result_row(
             experiment_id, dataset, model_name, task, "pooled",
-            "spearman_corr", pooled_spearman,
+            "spearman_corr", pooled_spearman, tabpfn_version=row_version,
         ))
 
         mean_dev = float(np.mean(fold_deviances))

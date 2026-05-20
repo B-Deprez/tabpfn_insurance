@@ -24,3 +24,8 @@ tabpfn:
   # TabPFN-2.6 scales to 100,000 samples; both severity datasets fit comfortably
   # within this ceiling so no subsampling is needed.
   max_train_size: 100000
+  # Internal ModelVersions to dispatch through create_default_for_version.
+  # Each listed version is run as a separate fit/predict pass per fold and
+  # appended to the results CSV with the corresponding ``tabpfn_version``.
+  # Accepted values per element: "v2_6", "v3".
+  tabpfn_versions: ["v2_6", "v3"]

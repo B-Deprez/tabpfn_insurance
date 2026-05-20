@@ -64,6 +64,22 @@ def _model_family(model_name: str) -> str:
     return "tabpfn"
 
 
+def _expand_models(models: list[str], tabpfn_versions: list[str]) -> list[tuple[str, str]]:
+    """Flatten ``models`` into (model_name, tabpfn_version) pairs.
+
+    For ``"tabpfn"`` one pair is emitted per entry in ``tabpfn_versions``.
+    Non-TabPFN models get a single pair with an empty version string.
+    """
+    pairs: list[tuple[str, str]] = []
+    for m in models:
+        if m == "tabpfn":
+            for v in tabpfn_versions:
+                pairs.append((m, v))
+        else:
+            pairs.append((m, ""))
+    return pairs
+
+
 def run_dataset(dataset: str, cfg: dict) -> None:
     """Run all models on the fretelematic dataset for binary classification."""
     task = cfg["task"]  # "clf"
@@ -71,6 +87,11 @@ def run_dataset(dataset: str, cfg: dict) -> None:
     n_folds = cfg["cv_folds"]
     cv_seed = cfg["cv_seed"]
     tabpfn_max = cfg["tabpfn"]["max_train_size"]
+    # Accept either a list or a single string for backward compat.
+    tabpfn_versions: list[str] = cfg["tabpfn"].get(
+        "tabpfn_versions",
+        [cfg["tabpfn"].get("tabpfn_version", "v3")],
+    )
 
     logger.info("=" * 70)
     logger.info("Dataset: %s  |  Task: %s", dataset, task)
@@ -83,9 +104,10 @@ def run_dataset(dataset: str, cfg: dict) -> None:
 
     feat_cfg = yaml.safe_load(open(PROJECT_ROOT / "config" / "features.yaml"))
 
-    for model_name in cfg["models"]:
+    for model_name, row_version in _expand_models(cfg["models"], tabpfn_versions):
         family = _model_family(model_name)
-        logger.info("--- Model: %s ---", model_name)
+        descr = f"{model_name} ({row_version})" if row_version else model_name
+        logger.info("--- Model: %s ---", descr)
 
         fold_aucs: list[float] = []
         all_y: list[np.ndarray] = []
@@ -108,7 +130,11 @@ def run_dataset(dataset: str, cfg: dict) -> None:
             elif model_name == "xgboost":
                 model = make_xgboost(task)
             else:
-                model = make_tabpfn(task, max_train_size=tabpfn_max)
+                model = make_tabpfn(
+                    task,
+                    max_train_size=tabpfn_max,
+                    tabpfn_version=row_version,
+                )
 
             fold_seed = cv_seed + fold
             t0 = time.perf_counter()
@@ -134,11 +160,11 @@ def run_dataset(dataset: str, cfg: dict) -> None:
 
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "auc_roc", fold_auc,
+                "auc_roc", fold_auc, tabpfn_version=row_version,
             ))
             result_rows.append(build_result_row(
                 experiment_id, dataset, model_name, task, fold,
-                "fit_predict_seconds", elapsed,
+                "fit_predict_seconds", elapsed, tabpfn_version=row_version,
             ))
 
             del model, train_df, test_df, X_train, X_test, p_test
@@ -148,7 +174,7 @@ def run_dataset(dataset: str, cfg: dict) -> None:
         pooled = pooled_auc_roc(all_y, all_p)
         result_rows.append(build_result_row(
             experiment_id, dataset, model_name, task, "pooled",
-            "auc_roc", pooled,
+            "auc_roc", pooled, tabpfn_version=row_version,
         ))
 
         mean_auc = float(np.mean(fold_aucs))

@@ -13,7 +13,7 @@
 # by listing r-base before rpy2 in the dependency list.
 
 conda env create -f environment.yaml
-conda activate tabpfn-insurance_v3
+conda activate tabpfn-insurance
 
 # ─────────────────────────────────────────────────────────────
 # STEP 2 — Install PyTorch (platform-specific)
