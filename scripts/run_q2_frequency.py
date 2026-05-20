@@ -233,9 +233,23 @@ def run_tabpfn_subsample(
                 X_sub = X_train_full.iloc[idx].reset_index(drop=True)
                 y_rate_sub = y_rate_full[idx]
 
+            # v2.6's pretraining ceiling is 100k rows; the "full" data point
+            # exists to exercise v3's expanded context size, so skip v2.6
+            # whenever the subsample exceeds its supported limit.
+            versions_for_size = [
+                v for v in tabpfn_versions
+                if not (v == "v2_6" and actual_size > 100_000)
+            ]
+            skipped = [v for v in tabpfn_versions if v not in versions_for_size]
+            if skipped:
+                logger.info(
+                    "  Fold %d | size=%s (n=%d): skipping %s (>100k pretraining limit)",
+                    fold, model_label, actual_size, skipped,
+                )
+
             # Both versions fit the same subsample, so per-version timing
             # and deviance can be compared directly.
-            for current_version in tabpfn_versions:
+            for current_version in versions_for_size:
                 t0 = time.perf_counter()
                 model = _make_regressor(current_version, device)
                 model.fit(X_sub, y_rate_sub)

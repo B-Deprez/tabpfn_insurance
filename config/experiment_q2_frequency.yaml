@@ -29,8 +29,9 @@ tabpfn:
   # per fold (seed = cv_seed + fold_index) and uses the first N for each size.
   # The "full" sentinel triggers an additional fit on the entire training
   # fold (no subsampling) — used to exercise v3's expanded context size.
-  # v2.6's pretraining ceiling is ~100k rows, so the "full" data point is
-  # primarily a v3 capability check; v2.6 may degrade or error out.
+  # v2.6's pretraining ceiling is 100k rows: the script automatically skips
+  # v2.6 whenever the subsample exceeds that limit (e.g. on the "full" pass
+  # for freMTPL2 / beMTPL97), so only v3 produces a "full" data point.
   subsample_sizes: [2000, 5000, 10000, 50000, 100000, "full"]
   # Internal ModelVersions to dispatch through create_default_for_version.
   # Each version is fitted on the same subsample so per-version timing /
