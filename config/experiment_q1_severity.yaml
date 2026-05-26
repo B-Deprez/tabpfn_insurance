@@ -27,5 +27,5 @@ tabpfn:
   # Internal ModelVersions to dispatch through create_default_for_version.
   # Each listed version is run as a separate fit/predict pass per fold and
   # appended to the results CSV with the corresponding ``tabpfn_version``.
-  # Accepted values per element: "v2_6", "v3".
+  # Accepted values per element: "v2_5", "v2_6", "v3".
   tabpfn_versions: ["v2_6", "v3"]

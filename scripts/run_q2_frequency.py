@@ -53,7 +53,11 @@ from src.data.cv import make_cv_splits, get_fold
 from src.data.preprocessing import encode_features, get_raw_features, get_targets
 from src.methods.glm_model import make_glm
 from src.methods.xgboost_model import make_xgboost
-from src.methods.tabpfn_model import TabPFNFreq, _make_regressor
+from src.methods.tabpfn_model import (
+    TabPFNFreq,
+    _VERSION_MAX_TRAIN_SIZE,
+    _make_regressor,
+)
 from src.utils.metrics import (
     exposure_weighted_rmse_rate,
     poisson_deviance,
@@ -233,12 +237,16 @@ def run_tabpfn_subsample(
                 X_sub = X_train_full.iloc[idx].reset_index(drop=True)
                 y_rate_sub = y_rate_full[idx]
 
-            # v2.6's pretraining ceiling is 100k rows; the "full" data point
-            # exists to exercise v3's expanded context size, so skip v2.6
-            # whenever the subsample exceeds its supported limit.
+            # v2.5 and v2.6 have fixed pretraining ceilings (50k and 100k rows
+            # respectively); the "full" data point exists to exercise v3's
+            # expanded context size, so skip the older versions whenever the
+            # subsample exceeds their supported limit.
             versions_for_size = [
                 v for v in tabpfn_versions
-                if not (v == "v2_6" and actual_size > 100_000)
+                if not (
+                    v in _VERSION_MAX_TRAIN_SIZE
+                    and actual_size > _VERSION_MAX_TRAIN_SIZE[v]
+                )
             ]
             skipped = [v for v in tabpfn_versions if v not in versions_for_size]
             if skipped:

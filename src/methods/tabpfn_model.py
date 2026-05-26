@@ -4,8 +4,8 @@ TabPFN handles mixed data types (strings, integers, floats) and missing
 values natively — no feature encoding is required.  Raw feature columns from
 ``get_raw_features()`` are passed directly to the model.
 
-The internal ``ModelVersion`` (``v2_6`` or ``v3``) is selected per call via
-``create_default_for_version``.  The default is ``v3``.
+The internal ``ModelVersion`` (``v2_5``, ``v2_6`` or ``v3``) is selected per
+call via ``create_default_for_version``.  The default is ``v3``.
 
 Exposure strategy B is used throughout:
     Frequency  : response = ClaimNb / Exposure (annualised rate)
@@ -31,12 +31,25 @@ logger = logging.getLogger(__name__)
 
 # Mapping of public string labels → tabpfn.constants.ModelVersion enum members.
 # Resolved lazily inside helpers so importing this module does not require tabpfn.
-_VERSION_LABELS = ("v2_6", "v3")
+_VERSION_LABELS = ("v2_5", "v2_6", "v3")
+
+# Upstream pretraining-context ceilings enforced by TabPFN. Inputs larger than
+# this raise ``TabPFNValidationError`` unless ``ignore_pretraining_limits=True``
+# is passed.  Versions not listed here have no fixed ceiling.
+_VERSION_MAX_TRAIN_SIZE = {"v2_5": 50_000, "v2_6": 100_000}
+
+
+def _effective_max_train_size(version: str, requested: int) -> int:
+    """Return ``min(requested, upstream_ceiling)`` for the given version."""
+    cap = _VERSION_MAX_TRAIN_SIZE.get(version)
+    return min(requested, cap) if cap is not None else requested
 
 
 def _resolve_model_version(version: str):
-    """Translate ``"v2_6"`` / ``"v3"`` to the corresponding ``ModelVersion`` enum."""
+    """Translate ``"v2_5"`` / ``"v2_6"`` / ``"v3"`` to the corresponding ``ModelVersion`` enum."""
     from tabpfn.constants import ModelVersion
+    if version == "v2_5":
+        return ModelVersion.V2_5
     if version == "v2_6":
         return ModelVersion.V2_6
     if version == "v3":
@@ -102,7 +115,7 @@ class TabPFNFreq:
         max_train_size: int = 100_000,
         tabpfn_version: str = "v3",
     ) -> None:
-        self.max_train_size = max_train_size
+        self.max_train_size = _effective_max_train_size(tabpfn_version, max_train_size)
         self.tabpfn_version = tabpfn_version
         self._model = None
         self._feature_names: list[str] = []
@@ -174,7 +187,7 @@ class TabPFNSev:
         max_train_size: int = 100_000,
         tabpfn_version: str = "v3",
     ) -> None:
-        self.max_train_size = max_train_size
+        self.max_train_size = _effective_max_train_size(tabpfn_version, max_train_size)
         self.tabpfn_version = tabpfn_version
         self._model = None
         self._feature_names: list[str] = []
@@ -258,7 +271,7 @@ class TabPFNClf:
         max_train_size: int = 100_000,
         tabpfn_version: str = "v3",
     ) -> None:
-        self.max_train_size = max_train_size
+        self.max_train_size = _effective_max_train_size(tabpfn_version, max_train_size)
         self.tabpfn_version = tabpfn_version
         self._model = None
         self._feature_names: list[str] = []
@@ -347,7 +360,7 @@ def make_tabpfn(
         task: ``"freq"``, ``"sev"``, or ``"clf"``.
         max_train_size: maximum training rows.
         shap: if True, return a SHAP-capable variant for Q3 (freq/sev only).
-        tabpfn_version: internal ``ModelVersion`` to use — ``"v2_6"`` or ``"v3"``.
+        tabpfn_version: internal ``ModelVersion`` to use — ``"v2_5"``, ``"v2_6"`` or ``"v3"``.
     """
     if task == "freq":
         cls = TabPFNFreqWithShap if shap else TabPFNFreq
