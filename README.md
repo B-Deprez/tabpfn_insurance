@@ -1,4 +1,4 @@
-# TabPFN for Insurance Pricing </br><sub><sub> Bruno Deprez, Wouter Verbeke, Tim Verdonck [2026](https://arxiv.org/abs/TODO)</sub></sub>
+# TabPFN for Insurance Pricing </br><sub><sub> Bruno Deprez, Wouter Verbeke, Tim Verdonck [(2026)](https://arxiv.org/abs/TODO)</sub></sub>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-orange.svg)](https://opensource.org/licenses/MIT)
 
